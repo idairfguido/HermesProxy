@@ -1,6 +1,6 @@
-﻿/*
+/*
  * Copyright (C) 2012-2020 CypherCore <http://github.com/CypherCore>
- * 
+ *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation, either version 3 of the License, or
@@ -15,53 +15,55 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+using System;
 using System.Security.Cryptography;
 
 namespace Framework.Cryptography;
 
-public class SessionKeyGenerator
+public sealed class SessionKeyGenerator
 {
-    public SessionKeyGenerator(byte[] buff, int size)
+    private const int HashSize = 32; // SHA-256
+
+    private readonly byte[] _o0 = new byte[HashSize];
+    private readonly byte[] _o1 = new byte[HashSize];
+    private readonly byte[] _o2 = new byte[HashSize];
+    private int _taken;
+
+    public SessionKeyGenerator(ReadOnlySpan<byte> buff)
     {
-        int halfSize = size / 2;
-
-        sh = SHA256.Create();
-        sh.TransformFinalBlock(buff, 0, halfSize);
-        o1 = sh.Hash!;
-
-        sh.Initialize();
-        sh.TransformFinalBlock(buff, halfSize, size - halfSize);
-        o2 = sh.Hash!;
-
+        int halfSize = buff.Length / 2;
+        SHA256.HashData(buff[..halfSize], _o1);
+        SHA256.HashData(buff[halfSize..], _o2);
         FillUp();
     }
 
-    public void Generate(byte[] buf, uint sz)
+    public SessionKeyGenerator(byte[] buff, int size) : this(buff.AsSpan(0, size)) { }
+
+    public void Generate(Span<byte> buf)
     {
-        for (uint i = 0; i < sz; ++i)
+        for (int i = 0; i < buf.Length; i++)
         {
-            if (taken == 32)
+            if (_taken == HashSize)
                 FillUp();
 
-            buf[i] = o0[taken];
-            taken++;
+            buf[i] = _o0[_taken];
+            _taken++;
         }
     }
 
-    void FillUp()
+    public void Generate(byte[] buf, uint sz) => Generate(buf.AsSpan(0, (int)sz));
+
+    private void FillUp()
     {
-        sh.Initialize();
-        sh.TransformBlock(o1, 0, 32, o1, 0);
-        sh.TransformBlock(o0, 0, 32, o0, 0);
-        sh.TransformFinalBlock(o2, 0, 32);
-        o0 = sh.Hash!;
+        using var ih = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        ih.AppendData(_o1);
+        ih.AppendData(_o0);
+        ih.AppendData(_o2);
 
-        taken = 0;
+        // Hash directly into _o0 to avoid the byte[] allocation that GetHashAndReset would produce.
+        if (!ih.TryGetHashAndReset(_o0, out int written) || written != HashSize)
+            throw new CryptographicException("SessionKeyGenerator.FillUp: SHA-256 produced unexpected output size.");
+
+        _taken = 0;
     }
-
-    SHA256 sh;
-    uint taken;
-    byte[] o0 = new byte[32];
-    byte[] o1 = new byte[32];
-    byte[] o2 = new byte[32];
 }

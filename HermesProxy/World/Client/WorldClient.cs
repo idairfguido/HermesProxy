@@ -1,12 +1,12 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Security.Cryptography;
 using System.Text;
 using System.Net;
 using System.Net.Sockets;
 using HermesProxy.Enums;
 using System.Numerics;
 using Framework.Constants;
-using Framework.Cryptography;
 using Framework;
 using Framework.IO;
 using Framework.Logging;
@@ -512,14 +512,16 @@ public partial class WorldClient
     {
         uint zero = 0;
 
-        byte[] authResponse = HashAlgorithm.SHA1.Hash
-        (
-            Encoding.ASCII.GetBytes(_username.ToUpper()),
-            BitConverter.GetBytes(zero),
-            BitConverter.GetBytes(clientSeed),
-            BitConverter.GetBytes(serverSeed),
-            GetSession().AuthClient.GetSessionKey()
-        );
+        byte[] authResponse;
+        {
+            using var ih = IncrementalHash.CreateHash(HashAlgorithmName.SHA1);
+            ih.AppendData(Encoding.ASCII.GetBytes(_username.ToUpper()));
+            ih.AppendData(BitConverter.GetBytes(zero));
+            ih.AppendData(BitConverter.GetBytes(clientSeed));
+            ih.AppendData(BitConverter.GetBytes(serverSeed));
+            ih.AppendData(GetSession().AuthClient.GetSessionKey());
+            authResponse = ih.GetHashAndReset();
+        }
 
         WorldPacket packet = new WorldPacket(Opcode.CMSG_AUTH_SESSION);
         packet.WriteUInt32((uint)LegacyVersion.Build);

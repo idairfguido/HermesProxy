@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
+using System.Security.Cryptography;
 using System.Text;
 using System.Net;
 using System.Net.Sockets;
@@ -9,7 +10,6 @@ using HermesProxy.Enums;
 using System.Numerics;
 using System.Threading.Tasks;
 using Framework.Constants;
-using Framework.Cryptography;
 using Framework;
 using Framework.IO;
 using Framework.Logging;
@@ -36,6 +36,16 @@ public partial class AuthClient
         // Debugger.Log(0, "TraceMe", $"{b}");
 #endif
     };
+
+    // Multi-buffer SHA1 used by SRP6 proofs. Avoids the per-call combined-buffer
+    // allocation the old HashHelper.Combine had — IncrementalHash streams each part.
+    private static byte[] Sha1Of(params ReadOnlySpan<byte[]> parts)
+    {
+        using var ih = IncrementalHash.CreateHash(HashAlgorithmName.SHA1);
+        foreach (var p in parts)
+            ih.AppendData(p);
+        return ih.GetHashAndReset();
+    }
 
     GlobalSessionData _globalSession;
     Socket _clientSocket = null!;
@@ -68,7 +78,7 @@ public partial class AuthClient
         _realmlistRequestIsPending = false;
 
         string authstring = $"{_username}:{password}";
-        _passwordHash = HashAlgorithm.SHA1.Hash(Encoding.ASCII.GetBytes(authstring.ToUpper()));
+        _passwordHash = SHA1.HashData(Encoding.ASCII.GetBytes(authstring.ToUpper()));
 
         try
         {
@@ -329,7 +339,7 @@ public partial class AuthClient
 
         #region Hash password
 
-        x = HashAlgorithm.SHA1.Hash(challenge_salt, _passwordHash).ToBigInteger();
+        x = Sha1Of(challenge_salt, _passwordHash).ToBigInteger();
 
         //Console.WriteLine("---====== shared password hash ======---");
         //Console.WriteLine($"g={g.ToCleanByteArray().ToHexString()}");
@@ -358,7 +368,7 @@ public partial class AuthClient
 
         #region Compute session key
 
-        u = HashAlgorithm.SHA1.Hash(A.ToCleanByteArray(), B.ToCleanByteArray()).ToBigInteger();
+        u = Sha1Of(A.ToCleanByteArray(), B.ToCleanByteArray()).ToBigInteger();
 
         // compute session key
         S = ((B + k * (N - g.ModPow(x, N))) % N).ModPow(a + (u * x), N);
@@ -376,14 +386,14 @@ public partial class AuthClient
         // take every even indices byte, hash, store in even indices
         for (int i = 0; i < 16; ++i)
             temp[i] = sData[i * 2];
-        keyHash = HashAlgorithm.SHA1.Hash(temp);
+        keyHash = SHA1.HashData(temp);
         for (int i = 0; i < 20; ++i)
             keyData[i * 2] = keyHash[i];
 
         // do the same for odd indices
         for (int i = 0; i < 16; ++i)
             temp[i] = sData[i * 2 + 1];
-        keyHash = HashAlgorithm.SHA1.Hash(temp);
+        keyHash = SHA1.HashData(temp);
         for (int i = 0; i < 20; ++i)
             keyData[i * 2 + 1] = keyHash[i];
 
@@ -401,29 +411,27 @@ public partial class AuthClient
         // XOR the hashes of N and g together
         byte[] gNHash = new byte[20];
 
-        byte[] nHash = HashAlgorithm.SHA1.Hash(N.ToCleanByteArray());
+        byte[] nHash = SHA1.HashData(N.ToCleanByteArray());
         for (int i = 0; i < 20; ++i)
             gNHash[i] = nHash[i];
         //Console.WriteLine($"nHash={nHash.ToHexString()}");
 
-        byte[] gHash = HashAlgorithm.SHA1.Hash(g.ToCleanByteArray());
+        byte[] gHash = SHA1.HashData(g.ToCleanByteArray());
         for (int i = 0; i < 20; ++i)
             gNHash[i] ^= gHash[i];
         //Console.WriteLine($"gHash={gHash.ToHexString()}");
 
         // hash username
-        byte[] userHash = HashAlgorithm.SHA1.Hash(Encoding.ASCII.GetBytes(_username.ToUpper()));
+        byte[] userHash = SHA1.HashData(Encoding.ASCII.GetBytes(_username.ToUpper()));
 
         // our proof
-        byte[] m1Hash = HashAlgorithm.SHA1.Hash
-        (
+        byte[] m1Hash = Sha1Of(
             gNHash,
             userHash,
             challenge_salt,
             A.ToCleanByteArray(),
             B.ToCleanByteArray(),
-            _key.ToCleanByteArray()
-        );
+            _key.ToCleanByteArray());
 
         //Console.WriteLine("---====== Client proof: ======---");
         //Console.WriteLine($"gNHash={gNHash.ToHexString()}");
@@ -437,7 +445,7 @@ public partial class AuthClient
         //Console.WriteLine($"M={m1Hash.ToHexString()}");
 
         // expected proof for server
-        _m2 = HashAlgorithm.SHA1.Hash(A.ToCleanByteArray(), m1Hash, keyData);
+        _m2 = Sha1Of(A.ToCleanByteArray(), m1Hash, keyData);
 
         #endregion
 
@@ -516,8 +524,8 @@ public partial class AuthClient
         var rand = System.Security.Cryptography.RandomNumberGenerator.Create();
         byte[] R1 = new byte[16];
         rand.GetBytes(R1);
-        byte[] R2 = HashAlgorithm.SHA1.Hash(Encoding.ASCII.GetBytes(_username), R1, reconnectProof, GetSessionKey());
-        byte[] R3 = HashAlgorithm.SHA1.Hash(R1, new byte[20]); // version challenge not actually used on reconnect
+        byte[] R2 = Sha1Of(Encoding.ASCII.GetBytes(_username), R1, reconnectProof, GetSessionKey());
+        byte[] R3 = Sha1Of(R1, new byte[20]); // version challenge not actually used on reconnect
 
         SendReconnectProof(R1, R2, R3);
     }

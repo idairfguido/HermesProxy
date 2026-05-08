@@ -120,7 +120,8 @@ public class SessionKeyGeneratorBenchmark
 [ShortRunJob]
 public class Sha1MultiBufferBenchmark
 {
-    // The SRP6 hot path concatenates 1-5 buffers. 5 buffers approximates the M1 proof.
+    // Measures the IncrementalHash multi-buffer pattern that replaced the deleted
+    // HashHelper.Combine() shim. Used in SRP6 (AuthClient) for 1-5 buffers per hash.
     [Params(2, 5)]
     public int Parts;
 
@@ -138,14 +139,8 @@ public class Sha1MultiBufferBenchmark
         }
     }
 
-    [Benchmark(Baseline = true)]
-    public byte[] HashHelper_HashAlgorithmSha1()
-    {
-        return Framework.Cryptography.HashAlgorithm.SHA1.Hash(_parts);
-    }
-
     [Benchmark]
-    public byte[] IncrementalHash_Direct()
+    public byte[] IncrementalHash_MultiBuffer()
     {
         using var ih = IncrementalHash.CreateHash(HashAlgorithmName.SHA1);
         for (int i = 0; i < _parts.Length; i++)
