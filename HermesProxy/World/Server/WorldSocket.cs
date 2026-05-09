@@ -24,8 +24,6 @@ using System.Collections.Generic;
 using System.Reflection;
 using System.Collections.Concurrent;
 using System.Threading;
-using System.Threading.Channels;
-using System.Threading.Tasks;
 
 using Framework.Constants;
 using Framework.Cryptography;
@@ -80,28 +78,13 @@ public partial class WorldSocket : SocketBase, BnetServices.INetwork
     ConnectToKey _instanceConnectKey;
     RealmId _realmId;
 
-    // Per-session deflater for SMSG_COMPRESSED_PACKET. Owned by SendLoopAsync once the
-    // channel begins draining; the channel's SingleReader=true contract makes this safe
-    // without explicit synchronization. Construction happens on the Accept thread; the
-    // first read happens on the SendLoop task — Channel.TryWrite/ReadAllAsync provides
-    // the cross-thread happens-before.
+    // Per-session deflater for SMSG_COMPRESSED_PACKET. Both fields are touched only
+    // under _sendLock (CompressPacket runs inside SendPacket's lock scope).
     private MemoryStream? _compressBuffer;
     private DeflateStream? _deflater;
     ConcurrentDictionary<Opcode, PacketHandler> _clientPacketTable = new();
     GlobalSessionData _globalSession = null!;
-
-    // Outbound packet queue. Producers (any thread) call SendPacket → TryWrite. A single
-    // dedicated consumer (SendLoopAsync, started in Accept) drains the channel and runs the
-    // encrypt + AsyncWrite path lock-free. Replaces the previous `lock (_sendLock)` pattern
-    // that serialized every outbound packet under contention.
-    readonly Channel<ServerPacket> _sendChannel = Channel.CreateUnbounded<ServerPacket>(
-        new UnboundedChannelOptions
-        {
-            SingleReader = true,
-            SingleWriter = false,
-            AllowSynchronousContinuations = false,
-        });
-    Task? _sendLoopTask;
+    readonly Lock _sendLock = new();
 
     private BnetServices.ServiceManager _bnetRpc = null!;
 
@@ -156,12 +139,6 @@ public partial class WorldSocket : SocketBase, BnetServices.INetwork
         packet.WriteString(ServerConnectionInitialize);
         packet.WriteString("\n");
         AsyncWrite(packet.GetData());
-
-        // Spin up the dedicated outbound send loop. From here on, all SendPacket calls
-        // funnel through _sendChannel and this single consumer. The initial connection-
-        // initialize bytes were already written above, before the loop existed, so order
-        // is preserved (kernel-side TCP byte-order, not channel-side).
-        _sendLoopTask = Task.Run(SendLoopAsync);
     }
 
     void InitializeHandler(SocketAsyncEventArgs args)
@@ -202,10 +179,10 @@ public partial class WorldSocket : SocketBase, BnetServices.INetwork
                     return;
                 }
 
-                // Per-session deflater. DeflateStream is raw-deflate (no zlib header) —
-                // matches the legacy windowBits=-15 setting. CompressionLevel.Fastest maps
-                // to zlib level 1 in zlib-ng on .NET 10. The `leaveOpen: true` keeps the
-                // backing MemoryStream alive across packets so Flush() can drain a single
+                // Per-session deflater. Raw-deflate (DeflateStream is no-header, matching
+                // the legacy windowBits=-15 setting). CompressionLevel.Fastest maps to
+                // zlib level 1 in zlib-ng on .NET 10. leaveOpen=true keeps the backing
+                // MemoryStream alive across packets so Flush() can drain a single
                 // sync-flushed packet at a time.
                 _compressBuffer = new MemoryStream();
                 _deflater = new DeflateStream(_compressBuffer, CompressionLevel.Fastest, leaveOpen: true);
@@ -401,10 +378,7 @@ public partial class WorldSocket : SocketBase, BnetServices.INetwork
         return _clientPacketTable.LookupByKey(opcode);
     }
 
-    // C<P S: Sends data to modern client.
-    // Producers (any thread) enqueue into _sendChannel. The single SendLoopAsync consumer
-    // does the actual encrypt + AsyncWrite work, which removes the per-packet lock that
-    // was previously held over the entire critical section.
+    // C<P S: Sends data to modern client
     public void SendPacket(ServerPacket packet)
     {
         if (!IsOpen())
@@ -421,101 +395,66 @@ public partial class WorldSocket : SocketBase, BnetServices.INetwork
             return;
         }
 
-        // Materialize the packet bytes on the producer thread so the consumer doesn't
-        // sit on a long Write() (e.g. UpdateObject build). LogPacket touches the
-        // ModernSniff ref shared across producers — that race exists in the previous
-        // code too; not introduced by the refactor.
         packet.WritePacketData();
         if (GetSession() != null)
             packet.LogPacket(ref GetSession().ModernSniff, GetSession().PacketLogContext);
 
-        // TryWrite returns false once the writer is completed (socket closed). In that
-        // case the packet is dropped, matching the post-IsOpen race in the prior code.
-        _sendChannel.Writer.TryWrite(packet);
-    }
-
-    // Single-consumer drain. Runs on a Task started in Accept(). Exits when OnClose()
-    // calls _sendChannel.Writer.TryComplete() and the queue is empty.
-    private async Task SendLoopAsync()
-    {
-        try
+        lock (_sendLock)
         {
-            await foreach (var packet in _sendChannel.Reader.ReadAllAsync())
+            var data = packet.GetData()!;
+            Opcode universalOpcode = packet.GetUniversalOpcode();
+            ushort opcode = (ushort)packet.GetOpcode();
+
+            WorldSocketLogMessages.PacketSent(_melLog, _sourceFile, _netDirSend, universalOpcode, (uint)opcode);
+
+            ByteBuffer buffer = new();
+
+            int packetSize = data.Length;
+            if (packetSize > 0x400 && _worldCrypt.IsInitialized)
             {
-                try
-                {
-                    EncryptAndWrite(packet);
-                }
-                catch (Exception ex)
-                {
-                    Log.PrintNet(LogType.Error, LogNetDir.P2C, $"SendLoop encrypt/write failed: {ex.Message}");
-                }
+                buffer.WriteInt32(packetSize + 2);
+                Span<byte> opcodeBytes = stackalloc byte[2];
+                System.Buffers.Binary.BinaryPrimitives.WriteUInt16LittleEndian(opcodeBytes, opcode);
+                buffer.WriteUInt32(Adler32.Update(Adler32.Update(0x9827D8F1, opcodeBytes), data.AsSpan(0, packetSize)));
+
+                byte[] compressedData;
+                uint compressedSize = CompressPacket(data, opcode, out compressedData);
+                buffer.WriteUInt32(Adler32.Update(0x9827D8F1, compressedData.AsSpan(0, (int)compressedSize)));
+                buffer.WriteBytes(compressedData, compressedSize);
+
+                packetSize = (int)(compressedSize + 12);
+                opcode = (ushort)ModernVersion.GetCurrentOpcode(Opcode.SMSG_COMPRESSED_PACKET);
+                System.Diagnostics.Trace.Assert(opcode != 0);
+
+                data = buffer.GetData();
             }
+
+            buffer = new ByteBuffer();
+            buffer.WriteUInt16(opcode);
+            buffer.WriteBytes(data);
+            packetSize += 2 /*opcode*/;
+
+            data = buffer.GetData();
+
+            PacketHeader header = new();
+            header.Size = packetSize;
+            _worldCrypt.Encrypt(data, header.Tag);
+
+            ByteBuffer byteBuffer = new();
+            header.Write(byteBuffer);
+            byteBuffer.WriteBytes(data);
+
+            AsyncWrite(byteBuffer.GetData());
         }
-        catch (Exception ex)
-        {
-            Log.PrintNet(LogType.Error, LogNetDir.P2C, $"SendLoop terminated unexpectedly: {ex.Message}");
-        }
-    }
-
-    // No lock needed: SendLoopAsync is the sole consumer and runs serially. _worldCrypt
-    // and the compression stream are mutated only here (and during handshake setup).
-    private void EncryptAndWrite(ServerPacket packet)
-    {
-        var data = packet.GetData()!;
-        Opcode universalOpcode = packet.GetUniversalOpcode();
-        ushort opcode = (ushort)packet.GetOpcode();
-
-        WorldSocketLogMessages.PacketSent(_melLog, _sourceFile, _netDirSend, universalOpcode, (uint)opcode);
-
-        int packetSize = data.Length;
-        if (packetSize > 0x400 && _worldCrypt.IsInitialized)
-        {
-            // ByteBuffer is pooled (ArrayPool<byte>); `using` returns the rented buffer
-            // immediately on scope exit instead of waiting for the finalizer.
-            using ByteBuffer compressionBuffer = new();
-            compressionBuffer.WriteInt32(packetSize + 2);
-            Span<byte> opcodeBytes = stackalloc byte[2];
-            System.Buffers.Binary.BinaryPrimitives.WriteUInt16LittleEndian(opcodeBytes, opcode);
-            compressionBuffer.WriteUInt32(Adler32.Update(Adler32.Update(0x9827D8F1, opcodeBytes), data.AsSpan(0, packetSize)));
-
-            byte[] compressedData;
-            uint compressedSize = CompressPacket(data, opcode, out compressedData);
-            compressionBuffer.WriteUInt32(Adler32.Update(0x9827D8F1, compressedData.AsSpan(0, (int)compressedSize)));
-            compressionBuffer.WriteBytes(compressedData, compressedSize);
-
-            packetSize = (int)(compressedSize + 12);
-            opcode = (ushort)ModernVersion.GetCurrentOpcode(Opcode.SMSG_COMPRESSED_PACKET);
-            System.Diagnostics.Trace.Assert(opcode != 0);
-
-            data = compressionBuffer.GetData();
-        }
-
-        using ByteBuffer framingBuffer = new();
-        framingBuffer.WriteUInt16(opcode);
-        framingBuffer.WriteBytes(data);
-        packetSize += 2 /*opcode*/;
-
-        data = framingBuffer.GetData();
-
-        PacketHeader header = new();
-        header.Size = packetSize;
-        _worldCrypt.Encrypt(data, header.Tag);
-
-        using ByteBuffer wireFrame = new();
-        header.Write(wireFrame);
-        wireFrame.WriteBytes(data);
-
-        AsyncWrite(wireFrame.GetData());
     }
 
     public uint CompressPacket(byte[] data, ushort opcode, out byte[] outData)
     {
-        // Drain anything left from the prior packet, then push opcode + body and flush.
-        // Flush() on a compress-mode DeflateStream emits a Z_SYNC_FLUSH boundary
-        // (00 00 FF FF) in .NET 6+, matching the legacy deflate(strm, Z_SYNC_FLUSH) call
-        // pattern. The deflater state (sliding window / huffman tables) persists across
-        // calls because we keep reusing the same instance.
+        // Drain the prior packet's output, then push opcode + body and flush. Flush()
+        // on a compress-mode DeflateStream emits a Z_SYNC_FLUSH boundary (00 00 FF FF)
+        // on .NET 6+, matching the legacy deflate(strm, Z_SYNC_FLUSH) call. The deflater
+        // state (sliding window / huffman tables) persists across calls because we keep
+        // reusing the same instance.
         _compressBuffer!.SetLength(0);
         _compressBuffer.Position = 0;
 
@@ -540,11 +479,6 @@ public partial class WorldSocket : SocketBase, BnetServices.INetwork
 
     public override void OnClose()
     {
-        // Signal the send loop to drain remaining queued packets and exit. We don't await
-        // _sendLoopTask here — Dispose runs on whatever thread closed the socket and we
-        // don't want to block it on a possibly-slow AsyncWrite. The loop will retire on
-        // its own and any in-flight TryWrite from a stale producer will return false.
-        _sendChannel.Writer.TryComplete();
         base.OnClose();
     }
 
