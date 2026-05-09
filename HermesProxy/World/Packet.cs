@@ -209,6 +209,13 @@ public class WorldPacket : ByteBuffer
         opcode = ReadUInt16();
     }
 
+    /// Read-mode ctor for a possibly-oversized backing buffer with an explicit payload length.
+    /// Pass isPooled=true when `data` came from ArrayPool<byte>.Shared so Dispose returns it.
+    public WorldPacket(byte[] data, int length, bool isPooled) : base(data, length, isPooled)
+    {
+        opcode = ReadUInt16();
+    }
+
     public KeyValuePair<int, bool> ReadEntry()
     {
         // Entries masked with 0x80000000 are invalid entries OR used to tell apart NPCs and GOs
