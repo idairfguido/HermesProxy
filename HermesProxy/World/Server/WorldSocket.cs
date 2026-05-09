@@ -22,6 +22,8 @@ using System.Collections.Generic;
 using System.Reflection;
 using System.Collections.Concurrent;
 using System.Threading;
+using System.Threading.Channels;
+using System.Threading.Tasks;
 
 using Framework.Constants;
 using Framework.Cryptography;
@@ -79,7 +81,19 @@ public partial class WorldSocket : SocketBase, BnetServices.INetwork
     ZLib.z_stream _compressionStream = null!;
     ConcurrentDictionary<Opcode, PacketHandler> _clientPacketTable = new();
     GlobalSessionData _globalSession = null!;
-    readonly Lock _sendLock = new();
+
+    // Outbound packet queue. Producers (any thread) call SendPacket → TryWrite. A single
+    // dedicated consumer (SendLoopAsync, started in Accept) drains the channel and runs the
+    // encrypt + AsyncWrite path lock-free. Replaces the previous `lock (_sendLock)` pattern
+    // that serialized every outbound packet under contention.
+    readonly Channel<ServerPacket> _sendChannel = Channel.CreateUnbounded<ServerPacket>(
+        new UnboundedChannelOptions
+        {
+            SingleReader = true,
+            SingleWriter = false,
+            AllowSynchronousContinuations = false,
+        });
+    Task? _sendLoopTask;
 
     private BnetServices.ServiceManager _bnetRpc = null!;
 
@@ -131,6 +145,12 @@ public partial class WorldSocket : SocketBase, BnetServices.INetwork
         packet.WriteString(ServerConnectionInitialize);
         packet.WriteString("\n");
         AsyncWrite(packet.GetData());
+
+        // Spin up the dedicated outbound send loop. From here on, all SendPacket calls
+        // funnel through _sendChannel and this single consumer. The initial connection-
+        // initialize bytes were already written above, before the loop existed, so order
+        // is preserved (kernel-side TCP byte-order, not channel-side).
+        _sendLoopTask = Task.Run(SendLoopAsync);
     }
 
     void InitializeHandler(SocketAsyncEventArgs args)
@@ -374,7 +394,10 @@ public partial class WorldSocket : SocketBase, BnetServices.INetwork
         return _clientPacketTable.LookupByKey(opcode);
     }
 
-    // C<P S: Sends data to modern client
+    // C<P S: Sends data to modern client.
+    // Producers (any thread) enqueue into _sendChannel. The single SendLoopAsync consumer
+    // does the actual encrypt + AsyncWrite work, which removes the per-packet lock that
+    // was previously held over the entire critical section.
     public void SendPacket(ServerPacket packet)
     {
         if (!IsOpen())
@@ -391,55 +414,90 @@ public partial class WorldSocket : SocketBase, BnetServices.INetwork
             return;
         }
 
+        // Materialize the packet bytes on the producer thread so the consumer doesn't
+        // sit on a long Write() (e.g. UpdateObject build). LogPacket touches the
+        // ModernSniff ref shared across producers — that race exists in the previous
+        // code too; not introduced by the refactor.
         packet.WritePacketData();
         if (GetSession() != null)
             packet.LogPacket(ref GetSession().ModernSniff, GetSession().PacketLogContext);
 
-        lock (_sendLock)
+        // TryWrite returns false once the writer is completed (socket closed). In that
+        // case the packet is dropped, matching the post-IsOpen race in the prior code.
+        _sendChannel.Writer.TryWrite(packet);
+    }
+
+    // Single-consumer drain. Runs on a Task started in Accept(). Exits when OnClose()
+    // calls _sendChannel.Writer.TryComplete() and the queue is empty.
+    private async Task SendLoopAsync()
+    {
+        try
         {
-            var data = packet.GetData()!;
-            Opcode universalOpcode = packet.GetUniversalOpcode();
-            ushort opcode = (ushort)packet.GetOpcode();
-
-            WorldSocketLogMessages.PacketSent(_melLog, _sourceFile, _netDirSend, universalOpcode, (uint)opcode);
-
-            ByteBuffer buffer = new();
-
-            int packetSize = data.Length;
-            if (packetSize > 0x400 && _worldCrypt.IsInitialized)
+            await foreach (var packet in _sendChannel.Reader.ReadAllAsync())
             {
-                buffer.WriteInt32(packetSize + 2);
-                buffer.WriteUInt32(ZLib.adler32(ZLib.adler32(0x9827D8F1, BitConverter.GetBytes(opcode), 2), data, (uint)packetSize));
-
-                byte[] compressedData;
-                uint compressedSize = CompressPacket(data, opcode, out compressedData);
-                buffer.WriteUInt32(ZLib.adler32(0x9827D8F1, compressedData, compressedSize));
-                buffer.WriteBytes(compressedData, compressedSize);
-
-                packetSize = (int)(compressedSize + 12);
-                opcode = (ushort)ModernVersion.GetCurrentOpcode(Opcode.SMSG_COMPRESSED_PACKET);
-                System.Diagnostics.Trace.Assert(opcode != 0);
-
-                data = buffer.GetData();
+                try
+                {
+                    EncryptAndWrite(packet);
+                }
+                catch (Exception ex)
+                {
+                    Log.PrintNet(LogType.Error, LogNetDir.P2C, $"SendLoop encrypt/write failed: {ex.Message}");
+                }
             }
-
-            buffer = new ByteBuffer();
-            buffer.WriteUInt16(opcode);
-            buffer.WriteBytes(data);
-            packetSize += 2 /*opcode*/;
-
-            data = buffer.GetData();
-
-            PacketHeader header = new();
-            header.Size = packetSize;
-            _worldCrypt.Encrypt(data, header.Tag);
-
-            ByteBuffer byteBuffer = new();
-            header.Write(byteBuffer);
-            byteBuffer.WriteBytes(data);
-
-            AsyncWrite(byteBuffer.GetData());
         }
+        catch (Exception ex)
+        {
+            Log.PrintNet(LogType.Error, LogNetDir.P2C, $"SendLoop terminated unexpectedly: {ex.Message}");
+        }
+    }
+
+    // No lock needed: SendLoopAsync is the sole consumer and runs serially. _worldCrypt
+    // and the compression stream are mutated only here (and during handshake setup).
+    private void EncryptAndWrite(ServerPacket packet)
+    {
+        var data = packet.GetData()!;
+        Opcode universalOpcode = packet.GetUniversalOpcode();
+        ushort opcode = (ushort)packet.GetOpcode();
+
+        WorldSocketLogMessages.PacketSent(_melLog, _sourceFile, _netDirSend, universalOpcode, (uint)opcode);
+
+        int packetSize = data.Length;
+        if (packetSize > 0x400 && _worldCrypt.IsInitialized)
+        {
+            // ByteBuffer is pooled (ArrayPool<byte>); `using` returns the rented buffer
+            // immediately on scope exit instead of waiting for the finalizer.
+            using ByteBuffer compressionBuffer = new();
+            compressionBuffer.WriteInt32(packetSize + 2);
+            compressionBuffer.WriteUInt32(ZLib.adler32(ZLib.adler32(0x9827D8F1, BitConverter.GetBytes(opcode), 2), data, (uint)packetSize));
+
+            byte[] compressedData;
+            uint compressedSize = CompressPacket(data, opcode, out compressedData);
+            compressionBuffer.WriteUInt32(ZLib.adler32(0x9827D8F1, compressedData, compressedSize));
+            compressionBuffer.WriteBytes(compressedData, compressedSize);
+
+            packetSize = (int)(compressedSize + 12);
+            opcode = (ushort)ModernVersion.GetCurrentOpcode(Opcode.SMSG_COMPRESSED_PACKET);
+            System.Diagnostics.Trace.Assert(opcode != 0);
+
+            data = compressionBuffer.GetData();
+        }
+
+        using ByteBuffer framingBuffer = new();
+        framingBuffer.WriteUInt16(opcode);
+        framingBuffer.WriteBytes(data);
+        packetSize += 2 /*opcode*/;
+
+        data = framingBuffer.GetData();
+
+        PacketHeader header = new();
+        header.Size = packetSize;
+        _worldCrypt.Encrypt(data, header.Tag);
+
+        using ByteBuffer wireFrame = new();
+        header.Write(wireFrame);
+        wireFrame.WriteBytes(data);
+
+        AsyncWrite(wireFrame.GetData());
     }
 
     public uint CompressPacket(byte[] data, ushort opcode, out byte[] outData)
@@ -479,6 +537,11 @@ public partial class WorldSocket : SocketBase, BnetServices.INetwork
 
     public override void OnClose()
     {
+        // Signal the send loop to drain remaining queued packets and exit. We don't await
+        // _sendLoopTask here — Dispose runs on whatever thread closed the socket and we
+        // don't want to block it on a possibly-slow AsyncWrite. The loop will retire on
+        // its own and any in-flight TryWrite from a stale producer will return false.
+        _sendChannel.Writer.TryComplete();
         base.OnClose();
     }
 
