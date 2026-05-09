@@ -2,8 +2,6 @@ using System;
 using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Net;
-using System.Runtime.InteropServices;
-using System.Security.Cryptography;
 using System.Threading;
 using System.Threading.Tasks;
 using BNetServer;
@@ -88,19 +86,6 @@ internal sealed class ProxyHostedService : BackgroundService
         Log.Configure(_loggingOptions.Value.ToLogBootstrapOptions());
         Server.RegisterLogCallerMappings();
         Log.Print(LogType.Debug, "Debug logging enabled");
-
-        if (!AesGcm.IsSupported)
-        {
-            Log.Print(LogType.Error, "AesGcm is not supported on your platform");
-            if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
-            {
-                Log.Print(LogType.Error, "Since you are on MacOS, you can install openssl@3 via homebrew");
-                Log.Print(LogType.Error, "Run this:      brew install openssl@3");
-                Log.Print(LogType.Error, "Start Hermes:  DYLD_LIBRARY_PATH=/opt/homebrew/opt/openssl@3/lib ./HermesProxy");
-            }
-            _lifetime.StopApplication();
-            return;
-        }
 
         Server.LogClientAndServerBuild(_clientOptions.Value.ClientBuild, _legacyServerOptions.Value.ResolvedBuild);
 

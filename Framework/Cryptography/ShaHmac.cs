@@ -1,7 +1,7 @@
-﻿/*
+/*
  * Copyright (C) 2012-2020 CypherCore <http://github.com/CypherCore>
  * Copyright (C) 2012-2014 Arctium Emulation <http://arctium.org>
- * 
+ *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation, either version 3 of the License, or
@@ -17,133 +17,63 @@
  */
 
 using System;
+using System.Buffers.Binary;
 using System.Security.Cryptography;
-using System.Text;
 
 namespace Framework.Cryptography;
 
-public class Sha256
+public sealed class Sha256 : IDisposable
 {
-    public Sha256()
-    {
-        sha = SHA256.Create();
-        sha.Initialize();
-    }
+    private readonly IncrementalHash _hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
 
-    public void Process(byte[] data, int length)
-    {
-        sha.TransformBlock(data, 0, length, data, 0);
-    }
+    public void Process(ReadOnlySpan<byte> data) => _hash.AppendData(data);
+
+    public void Process(byte[] data, int length) => _hash.AppendData(data.AsSpan(0, length));
 
     public void Process(uint data)
     {
-        var bytes = BitConverter.GetBytes(data);
-
-        sha.TransformBlock(bytes, 0, 4, bytes, 0);
+        Span<byte> b = stackalloc byte[sizeof(uint)];
+        BinaryPrimitives.WriteUInt32LittleEndian(b, data);
+        _hash.AppendData(b);
     }
 
-    public void Process(string data)
+    public void Finish(ReadOnlySpan<byte> finalBlock)
     {
-        var bytes = Encoding.UTF8.GetBytes(data);
-
-        sha.TransformBlock(bytes, 0, bytes.Length, bytes, 0);
+        _hash.AppendData(finalBlock);
+        Digest = _hash.GetHashAndReset();
     }
 
-    public void Finish(byte[] data)
-    {
-        sha.TransformFinalBlock(data, 0, data.Length);
+    public void Finish(byte[] finalBlock) => Finish(finalBlock.AsSpan());
 
-        Digest = sha.Hash!;
-    }
-
-    public void Finish(byte[] data, int offset, int length)
-    {
-        sha.TransformFinalBlock(data, offset, length);
-
-        Digest = sha.Hash!;
-    }
-
-    SHA256 sha;
     public byte[]? Digest { get; private set; }
+
+    public void Dispose() => _hash.Dispose();
 }
 
-public class HmacHash : HMACSHA1
+public sealed class HmacSha256 : IDisposable
 {
-    public HmacHash(byte[] key) : base(key)
+    private readonly IncrementalHash _hash;
+
+    public HmacSha256(ReadOnlySpan<byte> key)
     {
-        Initialize();
+        _hash = IncrementalHash.CreateHMAC(HashAlgorithmName.SHA256, key);
     }
 
-    public void Process(byte[] data, int length)
+    public HmacSha256(byte[] key) : this(key.AsSpan()) { }
+
+    public void Process(ReadOnlySpan<byte> data) => _hash.AppendData(data);
+
+    public void Process(byte[] data, int length) => _hash.AppendData(data.AsSpan(0, length));
+
+    public void Finish(ReadOnlySpan<byte> finalBlock)
     {
-        TransformBlock(data, 0, length, data, 0);
+        _hash.AppendData(finalBlock);
+        Digest = _hash.GetHashAndReset();
     }
 
-    public void Process(uint data)
-    {
-        var bytes = BitConverter.GetBytes(data);
-
-        TransformBlock(bytes, 0, bytes.Length, bytes, 0);
-    }
-
-    public void Process(string data)
-    {
-        var bytes = Encoding.ASCII.GetBytes(data);
-
-        TransformBlock(bytes, 0, bytes.Length, bytes, 0);
-    }
-
-    public void Finish(byte[] data, int length)
-    {
-        TransformFinalBlock(data, 0, length);
-
-        Digest = Hash!;
-    }
-
-    public void Finish(string data)
-    {
-        var bytes = Encoding.ASCII.GetBytes(data);
-
-        TransformFinalBlock(bytes, 0, bytes.Length);
-
-        Digest = Hash!;
-    }
+    public void Finish(byte[] finalBlock, int length) => Finish(finalBlock.AsSpan(0, length));
 
     public byte[]? Digest { get; private set; }
-}
 
-public class HmacSha256 : HMACSHA256
-{
-    public HmacSha256(byte[] key) : base(key)
-    {
-        Initialize();
-    }
-
-    public void Process(byte[] data, int length)
-    {
-        TransformBlock(data, 0, length, data, 0);
-    }
-
-    public void Process(uint data)
-    {
-        var bytes = BitConverter.GetBytes(data);
-
-        TransformBlock(bytes, 0, bytes.Length, bytes, 0);
-    }
-
-    public void Process(string data)
-    {
-        var bytes = Encoding.ASCII.GetBytes(data);
-
-        TransformBlock(bytes, 0, bytes.Length, bytes, 0);
-    }
-
-    public void Finish(byte[] data, int length)
-    {
-        TransformFinalBlock(data, 0, length);
-
-        Digest = Hash!;
-    }
-
-    public byte[]? Digest { get; private set; }
+    public void Dispose() => _hash.Dispose();
 }

@@ -27,9 +27,13 @@
     <PackageVersion Include="Microsoft.Extensions.Options.DataAnnotations" Version="10.0.2" />
     <!-- HermesProxy project packages -->
     <PackageVersion Include="GitVersion.MsBuild" Version="6.5.1" />
-    <!-- BouncyCastle — Ed25519ctx signer for SMSG_ENTER_ENCRYPTED_MODE on WotLK Classic 3.4.3+
-         clients, which switched from RSA to Ed25519 signatures. .NET's built-in crypto doesn't
-         expose the RFC 8032 "Ed25519ctx" context variant. -->
+    <!-- BouncyCastle — two consumers:
+         1. Ed25519ctx signer for SMSG_ENTER_ENCRYPTED_MODE on WotLK Classic 3.4.3+ clients,
+            which switched from RSA to Ed25519 signatures. .NET's built-in crypto doesn't
+            expose the RFC 8032 "Ed25519ctx" context variant.
+         2. AES-GCM fallback in Framework.Cryptography.WorldCrypt for platforms where
+            System.Security.Cryptography.AesGcm rejects the 12-byte (96-bit) tag the WoW
+            protocol uses (notably macOS / Apple's CommonCrypto backend). -->
     <PackageVersion Include="BouncyCastle.Cryptography" Version="2.4.0" />
     <!-- Test packages -->
     <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.0.1" />
