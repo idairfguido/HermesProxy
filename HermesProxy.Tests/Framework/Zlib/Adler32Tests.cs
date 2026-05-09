@@ -4,32 +4,23 @@ using Xunit;
 
 namespace HermesProxy.Tests.Framework.Zlib;
 
-// Locks the current Framework.IO.Zlib Adler32 byte output prior to the planned port from
-// the jzlib-derived implementation (Adler32.cs:33-165) to a Span-based replacement. The
-// NMAX-boundary and WoW-seed cases capture goldens produced by today's code so the
-// replacement must reproduce them bit-for-bit.
+// Locks the byte-exact output of the Framework.IO.Adler32 implementation. The
+// NMAX-boundary and WoW-seed cases use goldens captured from the original jzlib
+// port, so any future change to the algorithm must reproduce them bit-for-bit.
 public class Adler32Tests
 {
     [Fact]
     public void Adler32_EmptyBuffer_ReturnsSeed()
     {
-        Assert.Equal(1u, ZLib.adler32(1, Array.Empty<byte>(), 0));
-        Assert.Equal(0x9827D8F1u, ZLib.adler32(0x9827D8F1, Array.Empty<byte>(), 0));
-    }
-
-    [Fact]
-    public void Adler32_NullBuffer_Returns1()
-    {
-        // The jzlib idiom: passing null requests the spec's initial seed (1).
-        Assert.Equal(1u, ZLib.adler32(0, null!, 0));
+        Assert.Equal(1u, Adler32.Update(1, ReadOnlySpan<byte>.Empty));
+        Assert.Equal(0x9827D8F1u, Adler32.Update(0x9827D8F1, ReadOnlySpan<byte>.Empty));
     }
 
     [Fact]
     public void Adler32_KnownVector_Wikipedia()
     {
         // Public spec vector — adler32(seed=1, "Wikipedia") = 0x11E60398.
-        byte[] input = "Wikipedia"u8.ToArray();
-        Assert.Equal(0x11E60398u, ZLib.adler32(1, input, (uint)input.Length));
+        Assert.Equal(0x11E60398u, Adler32.Update(1, "Wikipedia"u8));
     }
 
     [Theory]
@@ -42,32 +33,25 @@ public class Adler32Tests
     [InlineData(16656, 0x1C3D5848u)] // 3 * NMAX
     public void Adler32_DeterministicRandom_MatchesGolden(int length, uint expectedGolden)
     {
-        // Goldens captured from today's ZLib.adler32 (the jzlib port). Phase B's Span
-        // replacement must reproduce them without modifying this test.
+        // Goldens captured from the original jzlib port; the Span-based implementation
+        // must reproduce them without modifying this test.
         byte[] buf = new byte[length];
         new Random(42).NextBytes(buf);
-        uint actual = ZLib.adler32(1, buf, (uint)length);
-        Assert.Equal(expectedGolden, actual);
+        Assert.Equal(expectedGolden, Adler32.Update(1, buf));
     }
 
     [Fact]
-    public void Adler32_OffsetOverload_EquivalentToSlice()
+    public void Adler32_SliceMatchesCopy()
     {
         byte[] buf = new byte[256];
         new Random(7).NextBytes(buf);
 
-        // Whole buffer via the (adler, buf, len) overload …
-        uint whole = ZLib.adler32(1, buf, (uint)buf.Length);
-
-        // … must match the (adler, buf, ind, len) overload with ind=0.
-        Assert.Equal(whole, ZLib.adler32(1, buf, 0, (uint)buf.Length));
-
-        // Slice consistency: adler over buf[64..] equals adler over a copy of that slice.
+        // Adler over a slice of the buffer equals adler over a copy of that slice.
         byte[] slice = new byte[buf.Length - 64];
         Array.Copy(buf, 64, slice, 0, slice.Length);
         Assert.Equal(
-            ZLib.adler32(1, slice, (uint)slice.Length),
-            ZLib.adler32(1, buf, 64, (uint)slice.Length));
+            Adler32.Update(1, slice),
+            Adler32.Update(1, buf.AsSpan(64)));
     }
 
     [Theory]
@@ -81,7 +65,6 @@ public class Adler32Tests
         // WorldSocket.cs:471,475. WoW's protocol contract — do not adjust.
         byte[] buf = new byte[length];
         new Random(123).NextBytes(buf);
-        uint actual = ZLib.adler32(0x9827D8F1, buf, (uint)length);
-        Assert.Equal(expectedGolden, actual);
+        Assert.Equal(expectedGolden, Adler32.Update(0x9827D8F1, buf));
     }
 }

@@ -30,7 +30,7 @@ public static partial class ZLib
         buffer.WriteUInt8(0x78);
         buffer.WriteUInt8(0x9c);
 
-        uint adler32 = ZLib.adler32(1, data, (uint)data.Length);
+        uint adler32 = Adler32.Update(1, data);
         var ms = new MemoryStream();
         using (var deflateStream = new DeflateStream(ms, CompressionMode.Compress))
         {

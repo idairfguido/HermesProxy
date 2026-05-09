@@ -17,6 +17,8 @@
 
 using System;
 using System.Diagnostics;
+using System.IO;
+using System.IO.Compression;
 using System.Net.Sockets;
 using System.Collections.Generic;
 using System.Reflection;
@@ -78,7 +80,13 @@ public partial class WorldSocket : SocketBase, BnetServices.INetwork
     ConnectToKey _instanceConnectKey;
     RealmId _realmId;
 
-    ZLib.z_stream _compressionStream = null!;
+    // Per-session deflater for SMSG_COMPRESSED_PACKET. Owned by SendLoopAsync once the
+    // channel begins draining; the channel's SingleReader=true contract makes this safe
+    // without explicit synchronization. Construction happens on the Accept thread; the
+    // first read happens on the SendLoop task — Channel.TryWrite/ReadAllAsync provides
+    // the cross-thread happens-before.
+    private MemoryStream? _compressBuffer;
+    private DeflateStream? _deflater;
     ConcurrentDictionary<Opcode, PacketHandler> _clientPacketTable = new();
     GlobalSessionData _globalSession = null!;
 
@@ -121,7 +129,10 @@ public partial class WorldSocket : SocketBase, BnetServices.INetwork
     {
         _serverChallenge = null!;
         _sessionKey = null!;
-        _compressionStream = null!;
+        _deflater?.Dispose();
+        _deflater = null;
+        _compressBuffer?.Dispose();
+        _compressBuffer = null;
 
         base.Dispose();
     }
@@ -191,17 +202,13 @@ public partial class WorldSocket : SocketBase, BnetServices.INetwork
                     return;
                 }
 
-                // Initialize the zlib stream
-                _compressionStream = new ZLib.z_stream();
-
-                // Initialize the deflate algo...
-                var z_res1 = ZLib.deflateInit2(_compressionStream, 1, 8, -15, 8, 0);
-                if (z_res1 != 0)
-                {
-                    CloseSocket();
-                    Log.Print(LogType.Error, $"Can't initialize packet compression (zlib: deflateInit2_) Error code: {z_res1}");
-                    return;
-                }
+                // Per-session deflater. DeflateStream is raw-deflate (no zlib header) —
+                // matches the legacy windowBits=-15 setting. CompressionLevel.Fastest maps
+                // to zlib level 1 in zlib-ng on .NET 10. The `leaveOpen: true` keeps the
+                // backing MemoryStream alive across packets so Flush() can drain a single
+                // sync-flushed packet at a time.
+                _compressBuffer = new MemoryStream();
+                _deflater = new DeflateStream(_compressBuffer, CompressionLevel.Fastest, leaveOpen: true);
 
                 _packetBuffer.Resize(0);
                 _packetBuffer.Reset();
@@ -468,11 +475,13 @@ public partial class WorldSocket : SocketBase, BnetServices.INetwork
             // immediately on scope exit instead of waiting for the finalizer.
             using ByteBuffer compressionBuffer = new();
             compressionBuffer.WriteInt32(packetSize + 2);
-            compressionBuffer.WriteUInt32(ZLib.adler32(ZLib.adler32(0x9827D8F1, BitConverter.GetBytes(opcode), 2), data, (uint)packetSize));
+            Span<byte> opcodeBytes = stackalloc byte[2];
+            System.Buffers.Binary.BinaryPrimitives.WriteUInt16LittleEndian(opcodeBytes, opcode);
+            compressionBuffer.WriteUInt32(Adler32.Update(Adler32.Update(0x9827D8F1, opcodeBytes), data.AsSpan(0, packetSize)));
 
             byte[] compressedData;
             uint compressedSize = CompressPacket(data, opcode, out compressedData);
-            compressionBuffer.WriteUInt32(ZLib.adler32(0x9827D8F1, compressedData, compressedSize));
+            compressionBuffer.WriteUInt32(Adler32.Update(0x9827D8F1, compressedData.AsSpan(0, (int)compressedSize)));
             compressionBuffer.WriteBytes(compressedData, compressedSize);
 
             packetSize = (int)(compressedSize + 12);
@@ -502,29 +511,23 @@ public partial class WorldSocket : SocketBase, BnetServices.INetwork
 
     public uint CompressPacket(byte[] data, ushort opcode, out byte[] outData)
     {
-        byte[] uncompressedData = new byte[2 + data.Length];
-        System.Buffers.Binary.BinaryPrimitives.WriteUInt16LittleEndian(uncompressedData, opcode);
-        data.CopyTo(uncompressedData.AsSpan(2));
+        // Drain anything left from the prior packet, then push opcode + body and flush.
+        // Flush() on a compress-mode DeflateStream emits a Z_SYNC_FLUSH boundary
+        // (00 00 FF FF) in .NET 6+, matching the legacy deflate(strm, Z_SYNC_FLUSH) call
+        // pattern. The deflater state (sliding window / huffman tables) persists across
+        // calls because we keep reusing the same instance.
+        _compressBuffer!.SetLength(0);
+        _compressBuffer.Position = 0;
 
-        uint bufferSize = ZLib.deflateBound(_compressionStream, (uint)data.Length);
-        outData = new byte[bufferSize];
+        Span<byte> hdr = stackalloc byte[2];
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt16LittleEndian(hdr, opcode);
+        _deflater!.Write(hdr);
+        _deflater.Write(data);
+        _deflater.Flush();
 
-        _compressionStream.next_out = 0;
-        _compressionStream.avail_out = bufferSize;
-        _compressionStream.out_buf = outData;
-
-        _compressionStream.next_in = 0;
-        _compressionStream.avail_in = (uint)uncompressedData.Length;
-        _compressionStream.in_buf = uncompressedData;
-
-        int z_res = ZLib.deflate(_compressionStream, 2);
-        if (z_res != 0)
-        {
-            Log.PrintNet(LogType.Error, LogNetDir.P2C, $"Can't compress packet data (zlib: deflate) Error code: {z_res} msg: {_compressionStream.msg}");
-            return 0;
-        }
-
-        return bufferSize - _compressionStream.avail_out;
+        uint produced = (uint)_compressBuffer.Length;
+        outData = _compressBuffer.GetBuffer();
+        return produced;
     }
 
     public override bool Update()

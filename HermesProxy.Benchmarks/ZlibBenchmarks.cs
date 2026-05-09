@@ -1,13 +1,18 @@
 using System;
 using System.Buffers.Binary;
+using System.IO;
+using System.IO.Compression;
 using BenchmarkDotNet.Attributes;
 using Framework.IO;
 
 namespace HermesProxy.Benchmarks;
 
-// Baseline benchmarks for Framework.IO.Zlib prior to the modernization pass (delete the
-// jzlib port + Span-based Adler32 + DeflateStream-backed stateful compression). After
-// the refactor lands, the same benchmark file is re-run to read the alloc/time deltas.
+// Performance baselines for Framework.IO.Adler32 and the WorldSocket-style stateful
+// DeflateStream path. Run before and after a perf-relevant change to read the
+// alloc/time deltas. The pre-modernization numbers (jzlib + array-only Adler32) live
+// in the test+bench commit (test+bench(zlib): lock Framework.IO.Zlib behavior
+// pre-refactor) — check that out and re-run if you need a head-to-head against the
+// legacy implementation.
 
 [MemoryDiagnoser]
 [ShortRunJob]
@@ -26,17 +31,17 @@ public class Adler32Benchmark
     }
 
     [Benchmark(Baseline = true)]
-    public uint Adler32_Jzlib_Array()
+    public uint Adler32_Span()
     {
-        return ZLib.adler32(1, _payload, (uint)_payload.Length);
+        return Adler32.Update(1, _payload);
     }
 
     [Benchmark]
-    public uint Adler32_Jzlib_WithOffset()
+    public uint Adler32_Sliced()
     {
-        // The (adler, buf, ind, len) overload is the path WorldSocket.cs takes when
-        // hashing a partial buffer. Keep tracking it independently.
-        return ZLib.adler32(1, _payload, 0, (uint)_payload.Length);
+        // Mirrors callers that hash the body portion of a buffer that has a header
+        // prefix (e.g. WorldSocket.cs:471 hashing data after the opcode).
+        return Adler32.Update(0x9827D8F1, _payload.AsSpan(0, _payload.Length));
     }
 }
 
@@ -72,15 +77,14 @@ public class ZlibCompressBenchmark
     }
 }
 
-// Simulates the WorldSocket.CompressPacket hot path: one deflater, N packets pushed
-// through, each followed by Z_SYNC_FLUSH. This is the most performance-sensitive caller
-// — every outbound game-server packet > 1024 bytes runs through here.
+// Simulates the WorldSocket.CompressPacket hot path: one DeflateStream, N packets pushed
+// through, each followed by Flush() (which emits Z_SYNC_FLUSH on .NET 6+). This is the
+// most performance-sensitive caller — every outbound game-server packet > 1024 bytes
+// runs through here.
 [MemoryDiagnoser]
 [ShortRunJob]
 public class StatefulDeflateBenchmark
 {
-    private const int Z_SYNC_FLUSH = 2;
-
     [Params(8, 32)]
     public int PacketCount;
 
@@ -102,35 +106,19 @@ public class StatefulDeflateBenchmark
     }
 
     [Benchmark(Baseline = true)]
-    public long Deflate_Jzlib_NPackets()
+    public long Deflate_DeflateStream_NPackets()
     {
-        var strm = new ZLib.z_stream();
-        int rc = ZLib.deflateInit2(strm, 1, 8, -15, 8, 0);
-        if (rc != 0) throw new InvalidOperationException("deflateInit2 failed");
+        using var buf = new MemoryStream();
+        using var deflater = new DeflateStream(buf, CompressionLevel.Fastest, leaveOpen: true);
 
-        long totalOut = 0;
-        Span<byte> hdrSpan = stackalloc byte[2];
+        Span<byte> hdr = stackalloc byte[2];
         for (int i = 0; i < PacketCount; i++)
         {
-            byte[] body = _packets[i];
-            byte[] uncompressed = new byte[2 + body.Length];
-            BinaryPrimitives.WriteUInt16LittleEndian(hdrSpan, (ushort)(0x1000 + i));
-            uncompressed[0] = hdrSpan[0]; uncompressed[1] = hdrSpan[1];
-            Buffer.BlockCopy(body, 0, uncompressed, 2, body.Length);
-
-            uint bound = ZLib.deflateBound(strm, (uint)body.Length);
-            byte[] outBuf = new byte[bound];
-
-            strm.next_in = 0;
-            strm.avail_in = (uint)uncompressed.Length;
-            strm.in_buf = uncompressed;
-            strm.next_out = 0;
-            strm.avail_out = bound;
-            strm.out_buf = outBuf;
-
-            ZLib.deflate(strm, Z_SYNC_FLUSH);
-            totalOut += bound - strm.avail_out;
+            BinaryPrimitives.WriteUInt16LittleEndian(hdr, (ushort)(0x1000 + i));
+            deflater.Write(hdr);
+            deflater.Write(_packets[i]);
+            deflater.Flush();
         }
-        return totalOut;
+        return buf.Length;
     }
 }

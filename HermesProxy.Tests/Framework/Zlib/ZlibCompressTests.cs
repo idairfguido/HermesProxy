@@ -40,7 +40,7 @@ public class ZlibCompressTests
         Assert.Equal(0x9C, compressed[1]);
 
         // Last 4 bytes are big-endian Adler-32 of the original payload.
-        uint expectedAdler = ZLib.adler32(1, payload, (uint)payload.Length);
+        uint expectedAdler = Adler32.Update(1, payload);
         uint trailingAdler =
             (uint)compressed[^4] << 24 |
             (uint)compressed[^3] << 16 |
@@ -97,7 +97,7 @@ public class ZlibCompressTests
         using (var deflater = new DeflateStream(ms, CompressionMode.Compress, leaveOpen: true))
             deflater.Write(payload, 0, payload.Length);
         // Trailing adler in big-endian order.
-        uint adler = ZLib.adler32(1, payload, (uint)payload.Length);
+        uint adler = Adler32.Update(1, payload);
         ms.WriteByte((byte)(adler >> 24));
         ms.WriteByte((byte)(adler >> 16));
         ms.WriteByte((byte)(adler >> 8));
