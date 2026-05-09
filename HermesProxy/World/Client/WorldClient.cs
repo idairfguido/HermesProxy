@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.Security.Cryptography;
 using System.Text;
@@ -247,21 +248,34 @@ public partial class WorldClient
                     continue;
                 }
 
-                byte[] buffer = new byte[packetSize];
-
-                // copy the opcode into the new buffer
-                buffer[0] = _headerBuffer[2];
-                buffer[1] = _headerBuffer[3];
-
-                if (!await ReceiveBufferFully(buffer.AsMemory(2, packetSize - 2)))
+                // Rent a possibly-oversized buffer; WorldPacket(byte[], int length, isPooled:true)
+                // tracks the actual payload length and returns it to the pool on Dispose.
+                byte[] buffer = ArrayPool<byte>.Shared.Rent(packetSize);
+                bool packetOwnsBuffer = false;
+                try
                 {
-                    HandleDisconnect("payload");
-                    return;
-                }
+                    // copy the opcode into the new buffer
+                    buffer[0] = _headerBuffer[2];
+                    buffer[1] = _headerBuffer[3];
 
-                WorldPacket packet = new WorldPacket(buffer);
-                packet.SetReceiveTime(Environment.TickCount);
-                HandlePacket(packet);
+                    if (!await ReceiveBufferFully(buffer.AsMemory(2, packetSize - 2)))
+                    {
+                        HandleDisconnect("payload");
+                        return;
+                    }
+
+                    using WorldPacket packet = new WorldPacket(buffer, packetSize, isPooled: true);
+                    packetOwnsBuffer = true;
+                    packet.SetReceiveTime(Environment.TickCount);
+                    HandlePacket(packet);
+                }
+                finally
+                {
+                    // If we never handed ownership to the WorldPacket (early-return path above),
+                    // we own the rental and must return it ourselves.
+                    if (!packetOwnsBuffer)
+                        ArrayPool<byte>.Shared.Return(buffer);
+                }
             }
         }
         catch(Exception e)
@@ -277,14 +291,18 @@ public partial class WorldClient
         }
     }
 
-    // C P>S: Sends data to world server
+    // C P>S: Sends data to world server.
+    // Wave 2-C send-loop refactor was reverted on this side after a regression: the legacy
+    // server forcibly closed the connection after our CMSG_AUTH_SESSION when SendPacket
+    // hopped onto a SendLoopAsync task. Until that interaction is understood, the legacy
+    // outbound path stays synchronous-under-lock. The Wave 1 `using ByteBuffer` is kept.
     private void SendPacket(WorldPacket packet)
     {
         lock (_sendLock)
         {
             try
             {
-                ByteBuffer buffer = new ByteBuffer();
+                using ByteBuffer buffer = new ByteBuffer();
                 LegacyClientPacketHeader header = new LegacyClientPacketHeader();
 
                 header.Size = (ushort)(packet.GetSize() + sizeof(uint)); // size includes the opcode
@@ -464,9 +482,9 @@ public partial class WorldClient
             case Opcode.SMSG_ADDON_INFO:
                 break; // don't need to handle
             default:
-                if (_packetHandlers.ContainsKey(universalOpcode))
+                if (_packetHandlers.TryGetValue(universalOpcode, out var handler))
                 {
-                    _packetHandlers[universalOpcode](packet);
+                    handler(packet);
                 }
                 else
                 {
