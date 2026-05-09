@@ -512,3 +512,9 @@ debug.*
 
 # Claude local AI files
 .claude/*.local.*
+
+# Launch profiles
+HermesProxy/profiles/*.json
+
+# Local regression-test driver
+test-loop2.ps1
