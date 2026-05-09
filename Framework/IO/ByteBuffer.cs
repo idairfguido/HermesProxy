@@ -60,6 +60,17 @@ public class ByteBuffer : IDisposable
         _isWriteMode = false;
     }
 
+    /// Read-mode ctor for a possibly-oversized backing buffer with an explicit payload length.
+    /// Pass isPooled=true when `data` came from ArrayPool<byte>.Shared so Dispose returns it.
+    public ByteBuffer(byte[] data, int length, bool isPooled)
+    {
+        _buffer = data;
+        _position = 0;
+        _length = length;
+        _isPooledBuffer = isPooled;
+        _isWriteMode = false;
+    }
+
     ~ByteBuffer()
     {
         Dispose(false);

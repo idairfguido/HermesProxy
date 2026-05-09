@@ -1,166 +1,122 @@
-// adler32.cs -- compute the Adler-32 checksum of a data stream
-// Copyright (C) 1995-2007 Mark Adler
-// Copyright (C) 2007-2011 by the Authors
-// For conditions of distribution and use, see copyright notice in License.txt
+// Adler-32 — port of Mark Adler / Jean-loup Gailly's reference implementation
+// (zlib adler32.c, 1995-2007), modernized for .NET 10: ReadOnlySpan<byte> input,
+// ref-byte indexing, AggressiveInlining. System.IO.Hashing does not ship Adler-32,
+// so we keep our own implementation. The NMAX-blocked unrolled loop and modulo
+// scheduling come straight from the upstream C source.
 
+using System;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 
 namespace Framework.IO;
 
-public static partial class ZLib
-	{
-		private const uint BASE=65521;	// largest prime smaller than 65536
-		private const uint NMAX=5552;	// NMAX is the largest n such that 255n(n+1)/2 + (n+1)(BASE-1) <= 2^32-1
+public static class Adler32
+{
+    private const uint Base = 65521;     // largest prime < 65536
+    private const uint NMax = 5552;      // largest n such that 255n(n+1)/2 + (n+1)(BASE-1) <= 2^32-1
 
-		// =========================================================================
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static uint Update(uint adler, ReadOnlySpan<byte> buf)
+    {
+        uint sum2 = (adler >> 16) & 0xFFFF;
+        adler &= 0xFFFF;
 
-		// Update a running Adler-32 checksum with the bytes buf[0..len-1] and return the updated checksum.
-		// If buf is NULL, this function returns the required initial value for the checksum.
-		// An Adler-32 checksum is almost as reliable as a CRC32 but can be computed much faster. 
-		// 
-		// Usage example:
-		//	uint adler=adler32(0, null, 0);
-		//	while(read_buffer(buffer, length)!=EOF) 
-		//	{
-		//		adler=adler32(adler, buffer, length);
-		//	}
-		//	if(adler!=original_adler) error();
+        int len = buf.Length;
+        if (len == 0)
+            return adler | (sum2 << 16);
 
-		public static uint adler32(uint adler, byte[] buf, uint len)
-		{
-			return adler32(adler, buf, 0, len);
-		}
+        ref byte p = ref MemoryMarshal.GetReference(buf);
 
-		public static uint adler32(uint adler, byte[] buf, uint ind, uint len)
-		{
-			// initial Adler-32 value (deferred check for len==1 speed)
-			if(buf==null) return 1;
+        // single-byte fast path keeps len==1 callers branchless past the modulo work
+        if (len == 1)
+        {
+            adler += p;
+            if (adler >= Base) adler -= Base;
+            sum2 += adler;
+            if (sum2 >= Base) sum2 -= Base;
+            return adler | (sum2 << 16);
+        }
 
-			// split Adler-32 into component sums
-			uint sum2=(adler>>16)&0xffff;
-			adler&=0xffff;
+        // tiny lengths — keep modulos out of the hot path entirely
+        if (len < 16)
+        {
+            int j = 0;
+            while (j < len)
+            {
+                adler += Unsafe.Add(ref p, j++);
+                sum2 += adler;
+            }
+            if (adler >= Base) adler -= Base;
+            sum2 %= Base;
+            return adler | (sum2 << 16);
+        }
 
-			//uint ind=0; // index in buf
+        // NMAX-sized blocks: 16 sums per inner step, one modulo per block
+        int idx = 0;
+        while (len >= NMax)
+        {
+            len -= (int)NMax;
+            uint n = NMax / 16;
+            do
+            {
+                adler += Unsafe.Add(ref p, idx); sum2 += adler;
+                adler += Unsafe.Add(ref p, idx + 1); sum2 += adler;
+                adler += Unsafe.Add(ref p, idx + 2); sum2 += adler;
+                adler += Unsafe.Add(ref p, idx + 3); sum2 += adler;
+                adler += Unsafe.Add(ref p, idx + 4); sum2 += adler;
+                adler += Unsafe.Add(ref p, idx + 5); sum2 += adler;
+                adler += Unsafe.Add(ref p, idx + 6); sum2 += adler;
+                adler += Unsafe.Add(ref p, idx + 7); sum2 += adler;
+                adler += Unsafe.Add(ref p, idx + 8); sum2 += adler;
+                adler += Unsafe.Add(ref p, idx + 9); sum2 += adler;
+                adler += Unsafe.Add(ref p, idx + 10); sum2 += adler;
+                adler += Unsafe.Add(ref p, idx + 11); sum2 += adler;
+                adler += Unsafe.Add(ref p, idx + 12); sum2 += adler;
+                adler += Unsafe.Add(ref p, idx + 13); sum2 += adler;
+                adler += Unsafe.Add(ref p, idx + 14); sum2 += adler;
+                adler += Unsafe.Add(ref p, idx + 15); sum2 += adler;
+                idx += 16;
+            } while (--n != 0);
 
-			// in case user likes doing a byte at a time, keep it fast
-			if(len==1)
-			{
-				adler+=buf[ind];
-				if(adler>=BASE) adler-=BASE;
-				sum2+=adler;
-				if(sum2>=BASE) sum2-=BASE;
-				return adler|(sum2<<16);
-			}
+            adler %= Base;
+            sum2 %= Base;
+        }
 
-			// in case short lengths are provided, keep it somewhat fast
-			if(len<16)
-			{
-				while(len--!=0)
-				{
-					adler+=buf[ind++];
-					sum2+=adler;
-				}
-				if(adler>=BASE) adler-=BASE;
-				sum2%=BASE;				// only added so many BASE's
-				return adler|(sum2<<16);
-			}
+        // remainder < NMAX, still one modulo at the end
+        if (len != 0)
+        {
+            while (len >= 16)
+            {
+                len -= 16;
+                adler += Unsafe.Add(ref p, idx); sum2 += adler;
+                adler += Unsafe.Add(ref p, idx + 1); sum2 += adler;
+                adler += Unsafe.Add(ref p, idx + 2); sum2 += adler;
+                adler += Unsafe.Add(ref p, idx + 3); sum2 += adler;
+                adler += Unsafe.Add(ref p, idx + 4); sum2 += adler;
+                adler += Unsafe.Add(ref p, idx + 5); sum2 += adler;
+                adler += Unsafe.Add(ref p, idx + 6); sum2 += adler;
+                adler += Unsafe.Add(ref p, idx + 7); sum2 += adler;
+                adler += Unsafe.Add(ref p, idx + 8); sum2 += adler;
+                adler += Unsafe.Add(ref p, idx + 9); sum2 += adler;
+                adler += Unsafe.Add(ref p, idx + 10); sum2 += adler;
+                adler += Unsafe.Add(ref p, idx + 11); sum2 += adler;
+                adler += Unsafe.Add(ref p, idx + 12); sum2 += adler;
+                adler += Unsafe.Add(ref p, idx + 13); sum2 += adler;
+                adler += Unsafe.Add(ref p, idx + 14); sum2 += adler;
+                adler += Unsafe.Add(ref p, idx + 15); sum2 += adler;
+                idx += 16;
+            }
 
-			// do length NMAX blocks -- requires just one modulo operation
-			while(len>=NMAX)
-			{
-				len-=NMAX;
-				uint n=NMAX/16;				// NMAX is divisible by 16
-				do
-				{
-					// 16 sums unrolled
-					adler+=buf[ind++]; sum2+=adler;
-					adler+=buf[ind++]; sum2+=adler;
-					adler+=buf[ind++]; sum2+=adler;
-					adler+=buf[ind++]; sum2+=adler;
-					adler+=buf[ind++]; sum2+=adler;
-					adler+=buf[ind++]; sum2+=adler;
-					adler+=buf[ind++]; sum2+=adler;
-					adler+=buf[ind++]; sum2+=adler;
-					adler+=buf[ind++]; sum2+=adler;
-					adler+=buf[ind++]; sum2+=adler;
-					adler+=buf[ind++]; sum2+=adler;
-					adler+=buf[ind++]; sum2+=adler;
-					adler+=buf[ind++]; sum2+=adler;
-					adler+=buf[ind++]; sum2+=adler;
-					adler+=buf[ind++]; sum2+=adler;
-					adler+=buf[ind++]; sum2+=adler;
-				} while(--n!=0);
+            while (len-- != 0)
+            {
+                adler += Unsafe.Add(ref p, idx++);
+                sum2 += adler;
+            }
 
-				adler%=BASE;
-				sum2%=BASE;
-			}
+            adler %= Base;
+            sum2 %= Base;
+        }
 
-			// do remaining bytes (less than NMAX, still just one modulo)
-			if(len!=0)
-			{ // avoid modulos if none remaining
-				while(len>=16)
-				{
-					len-=16;
-					adler+=buf[ind++]; sum2+=adler;
-					adler+=buf[ind++]; sum2+=adler;
-					adler+=buf[ind++]; sum2+=adler;
-					adler+=buf[ind++]; sum2+=adler;
-					adler+=buf[ind++]; sum2+=adler;
-					adler+=buf[ind++]; sum2+=adler;
-					adler+=buf[ind++]; sum2+=adler;
-					adler+=buf[ind++]; sum2+=adler;
-					adler+=buf[ind++]; sum2+=adler;
-					adler+=buf[ind++]; sum2+=adler;
-					adler+=buf[ind++]; sum2+=adler;
-					adler+=buf[ind++]; sum2+=adler;
-					adler+=buf[ind++]; sum2+=adler;
-					adler+=buf[ind++]; sum2+=adler;
-					adler+=buf[ind++]; sum2+=adler;
-					adler+=buf[ind++]; sum2+=adler;
-				}
-
-				while(len--!=0)
-				{
-					adler+=buf[ind++];
-					sum2+=adler;
-				}
-
-				adler%=BASE;
-				sum2%=BASE;
-			}
-
-			// return recombined sums
-			return adler|(sum2<<16);
-		}
-
-		// =========================================================================
-
-		// Combine two Adler-32 checksums into one.  For two sequences of bytes, seq1
-		// and seq2 with lengths len1 and len2, Adler-32 checksums were calculated for
-		// each, adler1 and adler2.  adler32_combine() returns the Adler-32 checksum of
-		// seq1 and seq2 concatenated, requiring only adler1, adler2, and len2.
-
-		public static uint adler32_combine_(uint adler1, uint adler2, uint len2)
-		{ // the derivation of this formula is left as an exercise for the reader
-			uint rem=len2%BASE;
-			uint sum1=adler1&0xffff;
-			uint sum2=(rem*sum1)%BASE;
-			sum1+=(adler2&0xffff)+BASE-1;
-			sum2+=((adler1>>16)&0xffff)+((adler2>>16)&0xffff)+BASE-rem;
-			if(sum1>=BASE) sum1-=BASE;
-			if(sum1>=BASE) sum1-=BASE;
-			if(sum2>=(BASE<<1)) sum2-=(BASE<<1);
-			if(sum2>=BASE) sum2-=BASE;
-			return sum1|(sum2<<16);
-		}
-
-		// =========================================================================
-		public static uint adler32_combine(uint adler1, uint adler2, uint len2)
-		{
-			return adler32_combine_(adler1, adler2, len2);
-		}
-
-		public static uint adler32_combine64(uint adler1, uint adler2, uint len2)
-		{
-			return adler32_combine_(adler1, adler2, len2);
-		}
-	}
+        return adler | (sum2 << 16);
+    }
+}
