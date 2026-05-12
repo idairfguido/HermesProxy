@@ -464,6 +464,16 @@ public partial class WorldClient
         }
     }
 
+    // Opcodes the legacy server may legitimately send before SMSG_AUTH_RESPONSE
+    // that we don't translate. Without this allow-list the default arm below
+    // flips _isSuccessful to false on the unknown packet and kills the
+    // handshake before AuthResponse arrives — e.g. Kronos / VMaNGOS / cMaNGOS
+    // 1.12 sending SMSG_WARDEN_DATA mid-auth (issue #62).
+    private static bool IsIgnorableDuringHandshake(Opcode op)
+    {
+        return op == Opcode.SMSG_WARDEN_DATA;
+    }
+
     private void HandlePacket(WorldPacket packet)
     {
         Opcode universalOpcode = packet.GetUniversalOpcode(false);
@@ -489,7 +499,7 @@ public partial class WorldClient
                 else
                 {
                     WorldClientLogMessages.NoHandlerForOpcode(_melLog, _sourceFile, _netDirRecv, universalOpcode, packet.GetOpcode());
-                    if (_isSuccessful == null)
+                    if (_isSuccessful == null && !IsIgnorableDuringHandshake(universalOpcode))
                         _isSuccessful = false;
                 }
                 break;
