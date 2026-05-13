@@ -13,6 +13,18 @@ public class WorldCryptTests : IDisposable
     // what's in the bytes, only that the length is 16/24/32.
     private static readonly byte[] Key16 = "0123456789ABCDEF"u8.ToArray();
 
+    // Probe once at class load: does the platform's native AesGcm accept the 12-byte (96-bit) tag
+    // the WoW protocol uses? macOS Apple CommonCrypto rejects it; .NET there falls back to BC.
+    // Tests that depend on native AesGcm as an independent verifier use Assert.SkipUnless on this.
+    private static readonly bool PlatformSupportsAesGcm12ByteTag = ProbeNativeAesGcm12();
+    private static bool ProbeNativeAesGcm12()
+    {
+        Span<byte> probeKey = stackalloc byte[16];
+        try { using var _ = new AesGcm(probeKey, 12); return true; }
+        catch (ArgumentException) { return false; }
+        catch (PlatformNotSupportedException) { return false; }
+    }
+
     public WorldCryptTests()
     {
         WorldCrypt.ForceBouncyCastleForTests = false;
@@ -28,6 +40,9 @@ public class WorldCryptTests : IDisposable
     [InlineData(true)]
     public void Encrypt_ThenDecrypt_RoundtripsThroughSameBackend(bool forceBouncyCastle)
     {
+        Assert.SkipUnless(PlatformSupportsAesGcm12ByteTag,
+            "Native AesGcm rejects 12-byte tags here; both the unforced-backend invariant and the cross-decrypt verifier require it.");
+
         WorldCrypt.ForceBouncyCastleForTests = forceBouncyCastle;
 
         // The two WorldCrypt instances simulate the proxy's two halves: one Encrypt-side
@@ -100,12 +115,12 @@ public class WorldCryptTests : IDisposable
         Assert.True(bc.UsingBouncyCastle);
 
         WorldCrypt.ForceBouncyCastleForTests = false;
+        Assert.SkipUnless(PlatformSupportsAesGcm12ByteTag,
+            "Platform falls back to BC even without the test flag; cannot verify unforced→native invariant here.");
+
         using var native = new WorldCrypt();
         native.Initialize(Key16);
-        // On platforms where native AesGcm with 12-byte tag works (Win/most Linux) this is false.
-        // On macOS where native rejects the tag, even without the force flag we fall through to BC.
-        // The contract is: the flag forces BC; clearing it allows either.
-        // We only assert the forcing direction strongly.
+        Assert.False(native.UsingBouncyCastle);
     }
 
     [Theory]
@@ -129,20 +144,13 @@ public class WorldCryptTests : IDisposable
         byte[] nonce = new byte[12];
         BinaryPrimitives.WriteUInt32LittleEndian(nonce.AsSpan(8), 0x52565253);
 
-        // Always verify against the native primitive — if 12-byte tag isn't supported here
-        // (macOS without our fallback logic) skip the cross-check rather than fail.
-        AesGcm? reference = null;
-        try { reference = new AesGcm(Key16, 12); }
-        catch (ArgumentException) { /* platform native rejects 12-byte tag — skip cross-check */ }
-        catch (PlatformNotSupportedException) { /* skip */ }
-        if (reference is null) return;
+        Assert.SkipUnless(PlatformSupportsAesGcm12ByteTag,
+            "Native AesGcm rejects 12-byte tags here; cross-check requires it.");
 
-        using (reference)
-        {
-            byte[] decrypted = new byte[data.Length];
-            reference.Decrypt(nonce, data, tag, decrypted);
-            Assert.Equal(plaintext, decrypted);
-        }
+        byte[] decrypted = new byte[data.Length];
+        using var reference = new AesGcm(Key16, 12);
+        reference.Decrypt(nonce, data, tag, decrypted);
+        Assert.Equal(plaintext, decrypted);
     }
 
     [Fact]
@@ -169,16 +177,12 @@ public class WorldCryptTests : IDisposable
         BinaryPrimitives.WriteUInt64LittleEndian(nonce.AsSpan(), 3);
         BinaryPrimitives.WriteUInt32LittleEndian(nonce.AsSpan(8), 0x52565253);
 
-        AesGcm? reference = null;
-        try { reference = new AesGcm(Key16, 12); }
-        catch (ArgumentException) { return; }
-        catch (PlatformNotSupportedException) { return; }
+        Assert.SkipUnless(PlatformSupportsAesGcm12ByteTag,
+            "Native AesGcm rejects 12-byte tags here; counter-advancement verifier requires it.");
 
-        using (reference)
-        {
-            byte[] decrypted = new byte[finalData.Length];
-            reference.Decrypt(nonce, finalData, finalTag, decrypted);
-            Assert.Equal(plaintext, decrypted);
-        }
+        byte[] decrypted = new byte[finalData.Length];
+        using var reference = new AesGcm(Key16, 12);
+        reference.Decrypt(nonce, finalData, finalTag, decrypted);
+        Assert.Equal(plaintext, decrypted);
     }
 }
