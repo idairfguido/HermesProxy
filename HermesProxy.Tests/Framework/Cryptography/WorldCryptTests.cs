@@ -3,6 +3,9 @@ using System.Buffers.Binary;
 using System.Security.Cryptography;
 using System.Text;
 using Framework.Cryptography;
+using Org.BouncyCastle.Crypto.Engines;
+using Org.BouncyCastle.Crypto.Modes;
+using Org.BouncyCastle.Crypto.Parameters;
 using Xunit;
 
 namespace HermesProxy.Tests.Framework.Cryptography;
@@ -78,8 +81,16 @@ public class WorldCryptTests : IDisposable
     {
         WorldCrypt.ForceBouncyCastleForTests = forceBouncyCastle;
 
-        // Hand-encrypt a CLNT-direction packet using the platform primitive, then feed a
+        // Hand-encrypt a CLNT-direction packet with a portable AES-GCM, then feed a
         // bit-flipped tag into WorldCrypt.Decrypt and assert it surfaces as a false return.
+        //
+        // Uses BouncyCastle as the reference encryptor so the test runs on every
+        // platform — System.Security.Cryptography.AesGcm rejects 12-byte tags on
+        // macOS (Apple CommonCrypto). BC implements standards-compliant AES-GCM
+        // and produces wire-compatible output, so WorldCrypt's decryptor accepts
+        // the ciphertext regardless of which backend it ends up using internally.
+        // Tamper detection itself is the actual SUT here — that path runs on all
+        // platforms with this change, instead of being silently skipped on macOS.
         byte[] plaintext = "client packet"u8.ToArray();
         byte[] ciphertext = new byte[plaintext.Length];
         byte[] tag = new byte[12];
@@ -87,8 +98,13 @@ public class WorldCryptTests : IDisposable
         BinaryPrimitives.WriteUInt64LittleEndian(nonce.AsSpan(), 0);
         BinaryPrimitives.WriteUInt32LittleEndian(nonce.AsSpan(8), 0x544E4C43);
 
-        using (var refEncryptor = new AesGcm(Key16, 12))
-            refEncryptor.Encrypt(nonce, plaintext, ciphertext, tag);
+        var bcEncryptor = new GcmBlockCipher(new AesEngine());
+        bcEncryptor.Init(true, new AeadParameters(new KeyParameter(Key16), 96, nonce));
+        byte[] bcOutput = new byte[plaintext.Length + 12];
+        int bcWritten = bcEncryptor.ProcessBytes(plaintext, 0, plaintext.Length, bcOutput, 0);
+        bcEncryptor.DoFinal(bcOutput, bcWritten);
+        Array.Copy(bcOutput, 0, ciphertext, 0, plaintext.Length);
+        Array.Copy(bcOutput, plaintext.Length, tag, 0, 12);
 
         tag[0] ^= 0xFF; // tamper
 
