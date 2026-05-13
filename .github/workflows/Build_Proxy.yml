@@ -1,6 +1,12 @@
 name: Build Proxy
 
-on: ['push', 'workflow_dispatch']
+# feature/** branches are handled by PreRelease.yml, which runs the same
+# test + matrix and additionally publishes a downloadable GitHub pre-release.
+# Excluding them here avoids the duplicate run.
+on:
+  push:
+    branches-ignore: ['feature/**']
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
