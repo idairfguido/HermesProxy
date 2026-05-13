@@ -12,7 +12,7 @@ dotnet test --filter "ClassName"    # Filter by class or method name
 
 ## Test Framework
 
-- **xUnit 2.9.3** — test runner
+- **xunit.v3 3.2.2** — test runner (supports `Assert.Skip` / `Assert.SkipUnless` / `Assert.SkipWhen` natively)
 - **Moq 4.20.72** — mocking
 - **coverlet.collector** — code coverage
 

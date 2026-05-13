@@ -75,8 +75,18 @@ jobs:
           echo "floor=$floor" >> "$GITHUB_OUTPUT"
           echo "slug=$slug" >> "$GITHUB_OUTPUT"
 
+  # Tests run on both Linux and macOS so platform-specific paths are exercised
+  # in CI — notably the AES-GCM 12-byte-tag fallback in WorldCrypt which kicks
+  # in on macOS (Apple CommonCrypto rejects 12-byte tags). The WorldCryptTests
+  # suite uses Assert.SkipUnless to mark cross-check sites Skipped on macOS,
+  # so a regression that breaks the BC fallback would surface here instead
+  # of silently passing on Linux.
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout repository content
         uses: actions/checkout@v4
@@ -92,8 +102,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.nuget/packages
-          key: nuget-${{ hashFiles('Directory.Packages.props') }}
-          restore-keys: nuget-
+          key: nuget-${{ runner.os }}-${{ hashFiles('Directory.Packages.props') }}
+          restore-keys: nuget-${{ runner.os }}-
 
       - name: Restore
         run: dotnet restore
