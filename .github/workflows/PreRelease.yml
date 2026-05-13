@@ -1,0 +1,307 @@
+name: PreRelease
+
+# Auto-publishes a GitHub Pre-release for each push to a long-running feature
+# branch. Lets contributors and testers grab a working multi-arch binary
+# without cloning + installing the .NET SDK. Each branch keeps exactly one
+# pre-release at a time (cleanup step at the end purges prior ones).
+#
+# Trigger scope: feature/** branches only — PR branches and master use the
+# existing Build_Proxy.yml (artifacts) and Release.yml (stable releases).
+#
+# Tag shape: v<floor>-<branch-slug>-<sha7>
+#   e.g. v4.3.0-feature-wotlk-classic-v3-4-3-af0d7b2
+# Floor comes from GitVersion.yml's next-version. SemVer 2.0 allows pre-release
+# identifiers with [0-9A-Za-z-], so slashes/dots in the branch are collapsed
+# to dashes via `tr '/.' '--'`.
+
+on:
+  push:
+    branches: ['feature/**']
+  workflow_dispatch:
+
+# A newer push to the same branch supersedes the in-flight run. The cleanup
+# step at the end handles any tag that did make it out before cancellation —
+# next successful run deletes it. Unlike Release.yml we don't risk a partial
+# upload colliding with a published stable release.
+concurrency:
+  group: prerelease-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Multi-SDK: 10.0.x covers master (targets net10.0). The pinned 11.0
+  # preview is available for branches like feature/dotnet11 that target
+  # net11.0 — without it, setup-dotnet@10.0.x fails with NETSDK1045.
+  # Bump the preview pin when a newer preview becomes the local baseline.
+  DOTNET_VERSION: |
+    10.0.x
+    11.0.100-preview.3.26207.106
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.next.outputs.tag }}
+      floor: ${{ steps.next.outputs.floor }}
+      slug: ${{ steps.next.outputs.slug }}
+    steps:
+      - name: Checkout repository content
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute prerelease tag
+        id: next
+        run: |
+          # Branch slug: collapse '/' and '.' to '-' so the tag is a valid git
+          # ref and SemVer pre-release identifier ([0-9A-Za-z-] only).
+          # feature/wotlk-classic-v3.4.3 → feature-wotlk-classic-v3-4-3
+          slug=$(echo "${{ github.ref_name }}" | tr '/.' '--')
+
+          floor=$(grep -E "^\s*next-version:" GitVersion.yml \
+                  | sed -E "s/.*next-version:\s*['\"]?([0-9]+\.[0-9]+\.[0-9]+)['\"]?.*/\1/" \
+                  | head -1)
+          floor="${floor:-0.0.0}"
+
+          sha7="${GITHUB_SHA::7}"
+          tag="v${floor}-${slug}-${sha7}"
+
+          echo "Branch: ${{ github.ref_name }} → slug=$slug"
+          echo "Floor (GitVersion.yml): $floor"
+          echo "Prerelease tag: $tag"
+
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "floor=$floor" >> "$GITHUB_OUTPUT"
+          echo "slug=$slug" >> "$GITHUB_OUTPUT"
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository content
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET Core SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ hashFiles('Directory.Packages.props') }}
+          restore-keys: nuget-
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Test
+        run: dotnet test --no-restore
+
+  build:
+    needs: version
+    strategy:
+      matrix:
+        include:
+          - os: windows
+            artifact: Windows
+            runtimeArg: '--use-current-runtime'
+          - os: ubuntu
+            artifact: Ubuntu
+            runtimeArg: '--use-current-runtime'
+          # linux-arm64: cross-compile from the x64 ubuntu runner. .NET SDK
+          # supports cross-RID self-contained publish, so no ARM runner is
+          # needed. Not smoke-tested in CI (would need qemu).
+          - os: ubuntu
+            artifact: Ubuntu-arm64
+            runtimeArg: '--runtime linux-arm64'
+          - os: macos
+            artifact: MacOS
+            runtimeArg: ''
+    runs-on: ${{ matrix.os }}-latest
+
+    steps:
+      - name: Checkout repository content
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET Core SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('Directory.Packages.props') }}
+          restore-keys: nuget-${{ runner.os }}-
+
+      # MSBuild's AssemblyVersion / FileVersion only accept numeric SemVer
+      # (Major.Minor.Build[.Revision]). We pass the floor (4.3.0) for those,
+      # and the full prerelease string for InformationalVersion so `--version`
+      # at runtime shows the exact branch + SHA the binary came from.
+      - name: Compute version strings
+        id: ver
+        shell: bash
+        run: |
+          floor="${{ needs.version.outputs.floor }}"
+          informational="${floor}-${{ needs.version.outputs.slug }}-${GITHUB_SHA::7}"
+          echo "floor=$floor" >> "$GITHUB_OUTPUT"
+          echo "informational=$informational" >> "$GITHUB_OUTPUT"
+
+      - name: Publish
+        if: matrix.os != 'macos'
+        run: dotnet publish HermesProxy --configuration Release ${{ matrix.runtimeArg }} -p:UsePublishBuildSettings=true -p:UpdateVersionProperties=false -p:Version=${{ steps.ver.outputs.floor }} -p:AssemblyVersion=${{ steps.ver.outputs.floor }} -p:FileVersion=${{ steps.ver.outputs.floor }} -p:InformationalVersion=${{ steps.ver.outputs.informational }}
+
+      - name: Publish (MacOS x86_64 and arm64)
+        if: matrix.os == 'macos'
+        run: |
+          dotnet publish HermesProxy --configuration Release --runtime osx-arm64 -p:UsePublishBuildSettings=true -p:UpdateVersionProperties=false -p:Version=${{ steps.ver.outputs.floor }} -p:AssemblyVersion=${{ steps.ver.outputs.floor }} -p:FileVersion=${{ steps.ver.outputs.floor }} -p:InformationalVersion=${{ steps.ver.outputs.informational }}
+          dotnet publish HermesProxy --configuration Release --runtime osx-x64 -p:UsePublishBuildSettings=true -p:UpdateVersionProperties=false -p:Version=${{ steps.ver.outputs.floor }} -p:AssemblyVersion=${{ steps.ver.outputs.floor }} -p:FileVersion=${{ steps.ver.outputs.floor }} -p:InformationalVersion=${{ steps.ver.outputs.informational }}
+          lipo ./HermesProxy/bin/Release/osx-arm64/publish/HermesProxy ./HermesProxy/bin/Release/osx-x64/publish/HermesProxy -create -output ./HermesProxy/bin/Release/osx-x64/publish/HermesProxy_universal
+          mv ./HermesProxy/bin/Release/osx-x64/publish/HermesProxy_universal ./HermesProxy/bin/Release/osx-x64/publish/HermesProxy
+          rm -rf ./HermesProxy/bin/Release/osx-arm64
+
+      - name: Copy files
+        run: cp -r ./HermesProxy/bin/Release/*/publish/ publish
+
+      - name: Mark as executable
+        if: matrix.os != 'windows'
+        run: chmod a+x publish/HermesProxy
+
+      - name: Package (tar.gz for Linux)
+        if: matrix.os == 'ubuntu'
+        run: |
+          mv publish HermesProxy-${{ matrix.artifact }}-${{ needs.version.outputs.tag }}
+          tar -czvf HermesProxy-${{ matrix.artifact }}-${{ needs.version.outputs.tag }}.tar.gz HermesProxy-${{ matrix.artifact }}-${{ needs.version.outputs.tag }}
+
+      - name: Package (zip for Windows)
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: |
+          Rename-Item publish "HermesProxy-${{ matrix.artifact }}-${{ needs.version.outputs.tag }}"
+          Compress-Archive -Path "HermesProxy-${{ matrix.artifact }}-${{ needs.version.outputs.tag }}" -DestinationPath "HermesProxy-${{ matrix.artifact }}-${{ needs.version.outputs.tag }}.zip"
+
+      - name: Package (zip for MacOS)
+        if: matrix.os == 'macos'
+        run: |
+          mv publish HermesProxy-${{ matrix.artifact }}-${{ needs.version.outputs.tag }}
+          zip -r HermesProxy-${{ matrix.artifact }}-${{ needs.version.outputs.tag }}.zip HermesProxy-${{ matrix.artifact }}-${{ needs.version.outputs.tag }}
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: HermesProxy-${{ matrix.artifact }}-${{ needs.version.outputs.tag }}
+          path: HermesProxy-${{ matrix.artifact }}-${{ needs.version.outputs.tag }}.*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+  prerelease:
+    needs: [version, test, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository content
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Collect release assets and generate checksums
+        run: |
+          mkdir release-assets
+          find artifacts -type f \( -name "*.zip" -o -name "*.tar.gz" \) -exec cp {} release-assets/ \;
+          cp scripts/verify-checksums.sh release-assets/
+          cp scripts/verify-checksums.ps1 release-assets/
+          cd release-assets
+          sha256sum *.zip *.tar.gz > checksums-sha256.txt
+          echo "=== Release assets ==="
+          ls -lh
+          echo ""
+          echo "=== Checksums ==="
+          cat checksums-sha256.txt
+
+      # Tightly-scoped destructive step. Pattern anchors on both ends:
+      #   ^v<floor>-<slug>-[0-9a-f]{7}$
+      # so it can only match prereleases for THIS branch at THIS floor with a
+      # 7-hex commit suffix. Stable releases (v4.3.0) and other branches'
+      # prereleases (v4.3.0-feature-other-...) cannot match. The tag we're
+      # about to create is also excluded by an explicit grep -v.
+      - name: Purge previous prereleases for this branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          floor="${{ needs.version.outputs.floor }}"
+          slug="${{ needs.version.outputs.slug }}"
+          new_tag="${{ needs.version.outputs.tag }}"
+          pattern="^v${floor}-${slug}-[0-9a-f]{7}$"
+
+          echo "Cleanup pattern: $pattern"
+          echo "Preserving new tag: $new_tag"
+
+          stale=$(gh release list --limit 200 --json tagName --jq '.[].tagName' \
+                  | grep -E "$pattern" \
+                  | grep -v "^${new_tag}$" || true)
+
+          if [ -z "$stale" ]; then
+            echo "No stale prereleases to purge."
+          else
+            echo "$stale" | while read -r old_tag; do
+              [ -z "$old_tag" ] && continue
+              echo "Deleting stale prerelease: $old_tag"
+              gh release delete "$old_tag" --yes --cleanup-tag
+            done
+          fi
+
+      - name: Create prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${{ needs.version.outputs.tag }}"
+          subject=$(git log -1 --format='%s' "${GITHUB_SHA}")
+          body=$(git log -1 --format='%B' "${GITHUB_SHA}")
+
+          gh release create "$tag" \
+            --prerelease \
+            --title "Pre-release: ${{ github.ref_name }} @ ${GITHUB_SHA::7} — ${subject}" \
+            --notes "Branch: \`${{ github.ref_name }}\`
+          Commit: \`${GITHUB_SHA}\`
+
+          ---
+
+          ${body}" \
+            release-assets/*
+
+  verify:
+    needs: [test, build, prerelease]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Check test result
+        if: needs.test.result != 'success'
+        run: |
+          echo "Tests failed — prerelease should not be trusted"
+          exit 1
+
+      - name: Check build result
+        if: needs.build.result != 'success'
+        run: |
+          echo "Build failed — prerelease incomplete"
+          exit 1
+
+      - name: Check prerelease result
+        if: needs.prerelease.result != 'success'
+        run: |
+          echo "Prerelease publish failed"
+          exit 1
