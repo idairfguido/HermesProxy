@@ -370,13 +370,27 @@ public static class Log
 
     private static ILogger ResolveCategoryFromPath(string path)
     {
-        var file = Path.GetFileNameWithoutExtension(path);
+        var file = StripPathAndExtension(path);
         return _callerToCategory.TryGetValue(file, out var logger) ? logger : Server;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static string FormatCaller(string path)
-        => Path.GetFileNameWithoutExtension(path).PadRight(15, ' ');
+        => StripPathAndExtension(path).PadRight(15, ' ');
+
+    // Path.GetFileNameWithoutExtension is platform-aware: on Linux it only recognises '/' as a
+    // directory separator, so Windows-cross-compiled paths like "X:\foo\bar\Baz.cs" pass through
+    // unchanged. Strip both separators ourselves so log SourceContext stays clean regardless of
+    // where the binary was built.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static string StripPathAndExtension(string path)
+    {
+        int lastSep = path.LastIndexOfAny(['/', '\\']);
+        var fileName = lastSep >= 0 ? path.AsSpan(lastSep + 1) : path.AsSpan();
+        int dot = fileName.LastIndexOf('.');
+        if (dot > 0) fileName = fileName[..dot];
+        return fileName.ToString();
+    }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static string FormatDir(LogNetDir dir) => dir switch
