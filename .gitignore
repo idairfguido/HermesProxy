@@ -98,6 +98,9 @@ fabric.properties
 !.vscode/extensions.json
 !.vscode/*.code-snippets
 
+# C# Dev kit
+*.lscache
+
 # Local History for Visual Studio Code
 .history/
 
