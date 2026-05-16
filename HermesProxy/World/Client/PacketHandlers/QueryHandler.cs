@@ -197,7 +197,13 @@ public partial class WorldClient
                 QuestObjective objective = new QuestObjective();
                 objective.QuestID = response.QuestID;
                 objective.Id = QuestObjective.QuestObjectiveCounter++;
-                objective.StorageIndex = objectiveCounter++;
+                // Legacy server stores the kill counter at the ReqCreatureOrGOIdN column index
+                // (vanilla 6-bit, TBC 8-bit, WotLK 16-bit slot in PLAYER_QUEST_LOG_*_2).
+                // Modern client reads ObjectiveProgress[StorageIndex], so a compacted index
+                // mis-points whenever the quest has a gap (e.g. Ferocitas 2459 — Mystic at column 1).
+                objective.StorageIndex = (sbyte)i;
+                if (objectiveCounter <= i)
+                    objectiveCounter = (sbyte)(i + 1);
                 objective.Type = isGo ? QuestObjectiveType.GameObject : QuestObjectiveType.Monster;
                 objective.ObjectID = creatureOrGoId;
                 objective.Amount = creatureOrGoAmount;
