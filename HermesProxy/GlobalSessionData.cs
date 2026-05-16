@@ -337,6 +337,55 @@ public sealed class GameSessionData
         uint count = GetLegacyFieldValueUInt32(itemGuid, ItemField.ITEM_FIELD_STACK_COUNT);
         return count > 0 ? count : 1;
     }
+    public uint GetItemCountInInventory(uint itemId)
+    {
+        uint total = 0;
+
+        for (int i = World.Enums.Vanilla.InventorySlots.ItemStart; i < World.Enums.Vanilla.InventorySlots.ItemEnd; i++)
+        {
+            var itemGuid64 = GetInventorySlotItem(i);
+            if (itemGuid64 == WowGuid64.Empty)
+                continue;
+
+            var itemGuid128 = itemGuid64.To128(this);
+            if (GetItemId(itemGuid128) == itemId)
+                total += GetItemStackCount(itemGuid128);
+        }
+
+        int containerSlotField = LegacyVersion.GetUpdateField(ContainerField.CONTAINER_FIELD_SLOT_1);
+        int numSlotsField = LegacyVersion.GetUpdateField(ContainerField.CONTAINER_FIELD_NUM_SLOTS);
+        if (containerSlotField < 0 || numSlotsField < 0)
+            return total;
+
+        for (int bagIdx = World.Enums.Vanilla.InventorySlots.BagStart; bagIdx < World.Enums.Vanilla.InventorySlots.BagEnd; bagIdx++)
+        {
+            var bagGuid64 = GetInventorySlotItem(bagIdx);
+            if (bagGuid64 == WowGuid64.Empty)
+                continue;
+
+            var bagGuid128 = bagGuid64.To128(this);
+            var bagFields = GetCachedObjectFieldsLegacy(bagGuid128);
+            if (bagFields == null)
+                continue;
+
+            if (!bagFields.TryGetValue(numSlotsField, out var numSlotsValue))
+                continue;
+            int numSlots = (int)numSlotsValue.UInt32Value;
+
+            for (int slot = 0; slot < numSlots; slot++)
+            {
+                var slotGuid = bagFields.GetGuidValue(containerSlotField + slot * 2);
+                if (slotGuid == WowGuid64.Empty)
+                    continue;
+
+                var slotGuid128 = slotGuid.To128(this);
+                if (GetItemId(slotGuid128) == itemId)
+                    total += GetItemStackCount(slotGuid128);
+            }
+        }
+
+        return total;
+    }
     public (byte containerSlot, byte slot)? FindItemInInventory(WowGuid64 itemGuid64)
     {
         // Search main backpack

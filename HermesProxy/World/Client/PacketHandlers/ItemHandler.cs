@@ -1,9 +1,6 @@
-﻿using Framework;
-using HermesProxy.Enums;
+﻿using HermesProxy.Enums;
 using HermesProxy.World.Enums;
-using HermesProxy.World.Objects;
 using HermesProxy.World.Server.Packets;
-using System;
 
 namespace HermesProxy.World.Client;
 
@@ -58,27 +55,12 @@ public partial class WorldClient
             item.QuantityInInventory = packet.ReadUInt32();
         else
         {
-            uint currentCount = 0;
-            QuestObjective? objective = GameData.GetQuestObjectiveForItem(item.Item.ItemID);
-            if (objective != null)
-            {
-                var updateFields = GetSession().GameState.GetCachedObjectFieldsLegacy(GetSession().GameState.CurrentPlayerGuid);
-                int questsCount = LegacyVersion.GetQuestLogSize();
-                for (int i = 0; i < questsCount; i++)
-                {
-                    QuestLog? logEntry = ReadQuestLogEntry(i, null, updateFields!);
-                    if (logEntry == null || logEntry.QuestID == null)
-                        continue;
-                    if (logEntry.QuestID != objective.QuestID)
-                        continue;
-                    if (logEntry.ObjectiveProgress[objective.StorageIndex] == null)
-                        continue;
-
-                    currentCount = (uint)logEntry.ObjectiveProgress[objective.StorageIndex]!;
-                    break;
-                }
-            }
-            item.QuantityInInventory = item.Quantity + currentCount;
+            // Vanilla SMSG_ITEM_PUSH_RESULT has no inventory-total field, and the legacy
+            // server doesn't slot-track item progress in PLAYER_QUEST_LOG_*_2 (kills only).
+            // The player + item UpdateObject for this loot has already been applied by the
+            // time we get here, so summing matching stacks gives the correct post-loot total.
+            uint currentCount = GetSession().GameState.GetItemCountInInventory(item.Item.ItemID);
+            item.QuantityInInventory = currentCount > 0 ? currentCount : item.Quantity;
         }
 
         if (item.Slot == Enums.Classic.InventorySlots.Bag0 && item.SlotInBag >= 0 &&
