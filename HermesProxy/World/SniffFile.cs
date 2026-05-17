@@ -42,6 +42,7 @@ public sealed class SniffFile
     BinaryWriter _fileWriter;
     ushort _gameVersion;
     readonly Lock _lock = new();
+    bool _closed;
 
     public void WriteHeader()
     {
@@ -63,6 +64,9 @@ public sealed class SniffFile
     {
         lock (_lock)
         {
+            if (_closed)
+                return;
+
             byte direction = !isFromClient ? (byte)0xff : (byte)0x0;
             _fileWriter.Write(direction);
 
@@ -92,13 +96,14 @@ public sealed class SniffFile
 
     public void CloseFile()
     {
-        // Guard against races with an in-flight WritePacket on another thread — session teardown
-        // can run concurrently with the last packets being flushed.
-        // Flush() is redundant here (BinaryWriter.Close -> FileStream.Dispose flushes the 64 KB
-        // buffer before closing the handle) but makes the intent explicit, and keeps the invariant
-        // that "CloseFile returned cleanly => all previously-written bytes are in the OS page cache".
+        // Idempotent: callers (CMSG_LOG_DISCONNECT in WorldSocket.ReadData, GlobalSessionData.OnDisconnect)
+        // race on the unsynchronised ModernSniff field; first wins, repeats must no-op rather than
+        // throw ObjectDisposedException on the already-closed FileStream (issue #75).
         lock (_lock)
         {
+            if (_closed)
+                return;
+            _closed = true;
             _fileWriter.Flush();
             _fileWriter.Close();
         }
