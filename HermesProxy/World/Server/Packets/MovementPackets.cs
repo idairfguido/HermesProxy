@@ -142,7 +142,13 @@ public class MonsterMove : ServerPacket, ISpanWritable
                 _worldPacket.WriteVector3(MoveSpline.FinalFacingSpot);
                 break;
             case SplineTypeModern.FacingTarget:
-                _worldPacket.WriteFloat(MoveSpline.FinalOrientation);
+                // V1_14 Classic Era expects PackedGuid128 only — issue #74 (sideways mob walks
+                // from the leading float shifting FacingGUID + every subsequent point by 4 bytes).
+                // V2_5+ Classic still needs the leading FinalOrientation float; without it
+                // server-spawned creatures play with corrupted spline endpoints and fall through
+                // terrain on TBC Classic.
+                if (ModernVersion.ExpansionVersion >= 2)
+                    _worldPacket.WriteFloat(MoveSpline.FinalOrientation);
                 _worldPacket.WritePackedGuid128(MoveSpline.FinalFacingGuid);
                 break;
             case SplineTypeModern.FacingAngle:
@@ -167,7 +173,7 @@ public class MonsterMove : ServerPacket, ISpanWritable
 
     // MaxSize computed from MaxSplinePoints:
     // Fixed: GUID(18) + StartPos(12) + SplineId(4) + Dest(12) + flags/times(36) + bits(6) = 88
-    // SplineType FacingTarget (worst case): float(4) + GUID(18) = 22
+    // SplineType FacingTarget (worst case, V2_5+): float(4) + GUID(18) = 22
     // Points: MaxSplinePoints * Vector3(12)
     // PackedDeltas: MaxSplinePoints * PackedXYZ(4)
     private const int FixedSize = 88 + 22; // 110 bytes
@@ -212,7 +218,10 @@ public class MonsterMove : ServerPacket, ISpanWritable
                 writer.WriteVector3(MoveSpline.FinalFacingSpot);
                 break;
             case SplineTypeModern.FacingTarget:
-                writer.WriteFloat(MoveSpline.FinalOrientation);
+                // V1_14: PackedGuid128 only (issue #74). V2_5+: leading FinalOrientation float
+                // restored so server-spawned creatures don't fall through terrain on TBC Classic.
+                if (ModernVersion.ExpansionVersion >= 2)
+                    writer.WriteFloat(MoveSpline.FinalOrientation);
                 writer.WritePackedGuid128(MoveSpline.FinalFacingGuid.Low, MoveSpline.FinalFacingGuid.High);
                 break;
             case SplineTypeModern.FacingAngle:
