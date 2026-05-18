@@ -19,6 +19,7 @@
 using Framework.Constants;
 using Framework.GameMath;
 using Framework.IO;
+using Framework.Logging;
 using HermesProxy.Enums;
 using HermesProxy.World.Enums;
 using HermesProxy.World.Objects;
@@ -124,26 +125,33 @@ public class ObjectUpdate
                 CreateData.MoveInfo.PitchRate = CreateData.MoveInfo.TurnRate;
             if (CreateData.MoveInfo.Flags.HasAnyFlag(MovementFlagModern.WalkMode) && (CreateData.MoveSpline != null))
                 CreateData.MoveInfo.Flags &= ~(uint)MovementFlagModern.WalkMode;
-            // V3_4_3-tuned placeholder. `FlagsExtra = 512` (VehiclePassengerIsTransitionAllowed)
-            // and the SplineFlags default below were added so that legacy-server-spawned creatures
-            // would render correctly under the WotLK Classic 3.4.3 client. Applied unconditionally,
-            // they emit modern-only spline / movement bits that the V1_14_x Classic Era client
-            // doesn't understand — works fine on Windows V1_14_0, crashes the macOS V1_14_0
-            // hardened runtime mid-loading-screen on dense zones (issue #64, bug 5). V2_5_x TBC
-            // Classic still needs them; without them creatures spawn invisible while combat fires.
-            if (ModernVersion.ExpansionVersion >= 2 && CreateData.MoveInfo.FlagsExtra == 0)
+            // CreateObject MoveInfo placeholder. `FlagsExtra = 512` is PreventChangePitch (0x200).
+            // Required by all modern Classic clients (V1_14 / V2_5 / V3_4_3) so legacy-server-spawned
+            // creatures render — without it creatures spawn invisible while combat events still fire.
+            // Issue #74 reopen confirmed V1_14 needs it too.
+            if (CreateData.MoveInfo.FlagsExtra == 0)
                 CreateData.MoveInfo.FlagsExtra = 512;
         }
         if (CreateData.MoveSpline != null)
         {
-            // Same gating as FlagsExtra above — modern spline-flag bits V1_14_x doesn't recognise.
-            // V2_5_x still needs them (otherwise creature CreateObject renders nothing). Was
-            // previously written as the decimal literal cast `(SplineFlagModern)2432696320` which
-            // is just `Unknown5 | Steering | Unknown10` (`0x01000000 | 0x10000000 | 0x80000000`).
-            if (ModernVersion.ExpansionVersion >= 2 && CreateData.MoveSpline.SplineFlags == 0)
+            // CreateObject MoveSpline placeholder. `Unknown5 | Steering | Unknown10` is the same
+            // modern Classic decoration as FlagsExtra above — universal across V1_14 / V2_5 / V3_4_3.
+            // Was previously the decimal literal cast `(SplineFlagModern)2432696320` =
+            // `0x01000000 | 0x10000000 | 0x80000000`.
+            if (CreateData.MoveSpline.SplineFlags == 0)
                 CreateData.MoveSpline.SplineFlags = SplineFlagModern.Unknown5
                                                   | SplineFlagModern.Steering
                                                   | SplineFlagModern.Unknown10;
+
+            // Opt-in placeholder trace. Enable with HERMES_TRACE_MOVEMENT=1.
+            if (MovementTrace.Enabled)
+                Log.Print(LogType.Server,
+                    $"[CreateObj-Move ] v{ModernVersion.ExpansionVersion} guid=0x{Guid.Low:X} entry={Guid.GetEntry()} " +
+                    $"face={CreateData.MoveSpline.SplineType} " +
+                    $"splineFlags=0x{(uint)CreateData.MoveSpline.SplineFlags:X8} " +
+                    $"flagsExtra={CreateData.MoveInfo?.FlagsExtra} " +
+                    $"orient={CreateData.MoveSpline.FinalOrientation:F3} " +
+                    $"faceGuid=0x{CreateData.MoveSpline.FinalFacingGuid.Low:X}");
         }
         if (GameObjectData != null)
         {

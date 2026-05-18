@@ -283,6 +283,20 @@ With the defaults (`Log.ToFile=true`, file captures per-category levels, console
 2. The file contains all startup context (version, client/server build, bound ports, resolved realms) and the per-session flow (auth, realm-list, world-socket handshake, opcode handler warnings, etc.).
 3. If you need even more detail for a particular subsystem, ask the user to rerun with for example `--set Log.Packet.MinimumLevel=Debug` and resend the log.
 
+#### Opt-In Movement Trace (`HERMES_TRACE_MOVEMENT`)
+
+When triaging mob-rendering or facing/spline glitches (e.g. issue #74-style "mob invisible / falls through terrain / runs sideways"), set the environment variable `HERMES_TRACE_MOVEMENT` to any non-empty value before launching HermesProxy. The proxy will then emit per-packet `[MonsterMove/In   ]`, `[MonsterMove/Write]`, `[MonsterMove/Span ]`, and `[CreateObj-Move ]` lines into `Logs/hermes-<date>.log`, tagged with the modern `ExpansionVersion` so logs from different client platforms (macOS / Windows / V1_14 / V2_5 / V3_4_3) can be compared side-by-side.
+
+```bash
+# Linux / macOS
+HERMES_TRACE_MOVEMENT=1 dotnet run --project HermesProxy
+
+# Windows PowerShell
+$env:HERMES_TRACE_MOVEMENT='1'; dotnet run --project HermesProxy
+```
+
+The trace lines are written at `Information` level into the `Server` category, so no extra `Log.*.MinimumLevel` knob is required. Default is off; the gate is a single `static readonly bool` checked at startup, so zero overhead when not enabled.
+
 ### Example Configuration
 
 ```xml

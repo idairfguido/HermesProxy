@@ -443,17 +443,14 @@ public partial class WorldClient
 
             if (splineFlags == SplineFlagVanilla.Runmode) // Default spline flags used by Vanilla and TBC servers
             {
-                // V2_5_x+ modern spline decoration. Unknown5/Steering/Unknown10 are post-WotLK
-                // bits V1_14_x Classic Era doesn't recognise — V1_14_x macOS hardened runtime
-                // crashes mid-loading-screen on dense zones (issue #64, bug 5). V2_5_x TBC Classic
-                // needs them to render server-spawned creatures at all. V1_14_x falls through to
-                // CanSwim-only so the client uses its native Vanilla-era spline animation path.
-                if (ModernVersion.ExpansionVersion >= 2)
-                    moveSpline.SplineFlags = SplineFlagModern.Unknown5;
+                // Modern Classic spline decoration. Unknown5/Steering/Unknown10 are required across
+                // V1_14 / V2_5 / V3_4_3 — without them server-spawned creatures don't render
+                // (issue #74 reopen confirmed for V1_14, c730414 for V2_5).
+                moveSpline.SplineFlags = SplineFlagModern.Unknown5;
                 UnitFlagsVanilla unitFlags = (UnitFlagsVanilla)GetSession().GameState.GetLegacyFieldValueUInt32(guid, UnitField.UNIT_FIELD_FLAGS);
                 if (unitFlags.HasFlag(UnitFlagsVanilla.CanSwim))
                     moveSpline.SplineFlags |= SplineFlagModern.CanSwim;
-                if (ModernVersion.ExpansionVersion >= 2 && type == SplineTypeLegacy.Normal && !unitFlags.HasFlag(UnitFlagsVanilla.InCombat))
+                if (type == SplineTypeLegacy.Normal && !unitFlags.HasFlag(UnitFlagsVanilla.InCombat))
                     moveSpline.SplineFlags |= SplineFlagModern.Steering | SplineFlagModern.Unknown10;
             }
             else
@@ -469,13 +466,12 @@ public partial class WorldClient
 
             if (splineFlags == SplineFlagTBC.Runmode) // Default spline flags used by Vanilla and TBC servers
             {
-                // Same V2_5_x+ gate as the Vanilla branch above — see issue #64 bug 5.
-                if (ModernVersion.ExpansionVersion >= 2)
-                    moveSpline.SplineFlags = SplineFlagModern.Unknown5;
+                // Same modern Classic decoration as the Vanilla branch — required for V1_14 / V2_5 / V3_4_3.
+                moveSpline.SplineFlags = SplineFlagModern.Unknown5;
                 UnitFlags unitFlags = (UnitFlags)GetSession().GameState.GetLegacyFieldValueUInt32(guid, UnitField.UNIT_FIELD_FLAGS);
                 if (unitFlags.HasFlag(UnitFlags.CanSwim))
                     moveSpline.SplineFlags |= SplineFlagModern.CanSwim;
-                if (ModernVersion.ExpansionVersion >= 2 && type == SplineTypeLegacy.Normal && !unitFlags.HasFlag(UnitFlags.InCombat))
+                if (type == SplineTypeLegacy.Normal && !unitFlags.HasFlag(UnitFlags.InCombat))
                     moveSpline.SplineFlags |= SplineFlagModern.Steering | SplineFlagModern.Unknown10;
             }
             else
@@ -565,21 +561,26 @@ public partial class WorldClient
             update.HasControl = false;
             SendPacketToClient(update);
 
-            // Taxi-flight spline decoration. V3_4_3-tuned high bits (Unknown5/Steering/Unknown10)
-            // crash V1_14_x macOS — issue #64, bug 5. Keep the cross-version Flying / CatmullRom /
-            // CanSwim / UncompressedPath bits; gate the post-Vanilla decoration to V2_5_x+.
+            // Taxi-flight spline decoration. Modern Classic flags universal across V1_14 / V2_5 / V3_4_3.
             moveSpline.SplineFlags = SplineFlagModern.Flying |
                                      SplineFlagModern.CatmullRom |
                                      SplineFlagModern.CanSwim |
-                                     SplineFlagModern.UncompressedPath;
-            if (ModernVersion.ExpansionVersion >= 2)
-                moveSpline.SplineFlags |= SplineFlagModern.Unknown5 |
-                                          SplineFlagModern.Steering |
-                                          SplineFlagModern.Unknown10;
+                                     SplineFlagModern.UncompressedPath |
+                                     SplineFlagModern.Unknown5 |
+                                     SplineFlagModern.Steering |
+                                     SplineFlagModern.Unknown10;
 
             if (!hasCatmullRom && moveSpline.EndPosition != Vector3.Zero)
                 moveSpline.SplinePoints.Add(moveSpline.EndPosition);
         }
+
+        // Opt-in legacy→modern translation trace. Enable with HERMES_TRACE_MOVEMENT=1.
+        if (MovementTrace.Enabled)
+            Log.Print(LogType.Server,
+                $"[MonsterMove/In   ] v{ModernVersion.ExpansionVersion} mover=0x{guid.Low:X} entry={guid.GetEntry()} " +
+                $"legacyType={type} modernFace={moveSpline.SplineType} " +
+                $"flags=0x{(uint)moveSpline.SplineFlags:X8} taxi={isTaxiFlight} " +
+                $"orient={moveSpline.FinalOrientation:F3} faceGuid=0x{moveSpline.FinalFacingGuid.Low:X}");
 
         MonsterMove monsterMove = new MonsterMove(guid, moveSpline);
         SendPacketToClient(monsterMove);

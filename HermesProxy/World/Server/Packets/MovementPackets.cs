@@ -19,6 +19,7 @@
 using Framework.Constants;
 using Framework.GameMath;
 using Framework.IO;
+using Framework.Logging;
 using HermesProxy.World.Enums;
 using HermesProxy.World.Objects;
 using System;
@@ -142,13 +143,13 @@ public class MonsterMove : ServerPacket, ISpanWritable
                 _worldPacket.WriteVector3(MoveSpline.FinalFacingSpot);
                 break;
             case SplineTypeModern.FacingTarget:
-                // V1_14 Classic Era expects PackedGuid128 only — issue #74 (sideways mob walks
-                // from the leading float shifting FacingGUID + every subsequent point by 4 bytes).
-                // V2_5+ Classic still needs the leading FinalOrientation float; without it
-                // server-spawned creatures play with corrupted spline endpoints and fall through
-                // terrain on TBC Classic.
-                if (ModernVersion.ExpansionVersion >= 2)
-                    _worldPacket.WriteFloat(MoveSpline.FinalOrientation);
+                // Universal modern Classic wire: float FaceDirection + PackedGuid128 FaceGUID.
+                // Matches TrinityCore wotlk_classic src/server/game/Server/Packets/MovementPackets.cpp
+                // (operator<< for MovementSpline, MONSTER_MOVE_FACING_TARGET case). Applies to V1_14,
+                // V2_5, V3_4_3 — dropping the float corrupts FaceGUID + every subsequent point by
+                // 4 bytes on the client side (issue #74 reopen, modern_*_parsed.txt confirms WPP
+                // ArgumentOutOfRangeException on FacingGUID high-byte after FaceDirection read).
+                _worldPacket.WriteFloat(MoveSpline.FinalOrientation);
                 _worldPacket.WritePackedGuid128(MoveSpline.FinalFacingGuid);
                 break;
             case SplineTypeModern.FacingAngle:
@@ -169,6 +170,16 @@ public class MonsterMove : ServerPacket, ISpanWritable
         if (JumpExtraData.HasValue)
             JumpExtraData.Value.Write(data);
         */
+
+        // Opt-in wire trace. Enable with HERMES_TRACE_MOVEMENT=1 for cross-OS / cross-version
+        // packet comparison (issue #74 reopen, macOS vs Windows V1_14_x divergence).
+        if (MovementTrace.Enabled)
+            Log.Print(LogType.Server,
+                $"[MonsterMove/Write] v{ModernVersion.ExpansionVersion} mover=0x{MoverGUID.Low:X} entry={MoverGUID.GetEntry()} " +
+                $"face={MoveSpline.SplineType} flags=0x{(uint)MoveSpline.SplineFlags:X8} mode={MoveSpline.SplineMode} " +
+                $"pts={Points.Count} deltas={PackedDeltas.Count} " +
+                $"orient={MoveSpline.FinalOrientation:F3} faceGuid=0x{MoveSpline.FinalFacingGuid.Low:X} " +
+                $"wire={_worldPacket.GetSize()}B");
     }
 
     // MaxSize computed from MaxSplinePoints:
@@ -218,10 +229,8 @@ public class MonsterMove : ServerPacket, ISpanWritable
                 writer.WriteVector3(MoveSpline.FinalFacingSpot);
                 break;
             case SplineTypeModern.FacingTarget:
-                // V1_14: PackedGuid128 only (issue #74). V2_5+: leading FinalOrientation float
-                // restored so server-spawned creatures don't fall through terrain on TBC Classic.
-                if (ModernVersion.ExpansionVersion >= 2)
-                    writer.WriteFloat(MoveSpline.FinalOrientation);
+                // See Write() above — universal modern Classic layout. TC wotlk_classic ground truth.
+                writer.WriteFloat(MoveSpline.FinalOrientation);
                 writer.WritePackedGuid128(MoveSpline.FinalFacingGuid.Low, MoveSpline.FinalFacingGuid.High);
                 break;
             case SplineTypeModern.FacingAngle:
@@ -234,6 +243,15 @@ public class MonsterMove : ServerPacket, ISpanWritable
 
         foreach (Vector3 pos in PackedDeltas)
             writer.WritePackXYZ(pos);
+
+        // Opt-in wire trace — see Write() above.
+        if (MovementTrace.Enabled)
+            Log.Print(LogType.Server,
+                $"[MonsterMove/Span ] v{ModernVersion.ExpansionVersion} mover=0x{MoverGUID.Low:X} entry={MoverGUID.GetEntry()} " +
+                $"face={MoveSpline.SplineType} flags=0x{(uint)MoveSpline.SplineFlags:X8} mode={MoveSpline.SplineMode} " +
+                $"pts={Points.Count} deltas={PackedDeltas.Count} " +
+                $"orient={MoveSpline.FinalOrientation:F3} faceGuid=0x{MoveSpline.FinalFacingGuid.Low:X} " +
+                $"wire={writer.Position}B");
 
         return writer.Position;
     }
