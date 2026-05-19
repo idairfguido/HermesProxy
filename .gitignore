@@ -521,3 +521,6 @@ HermesProxy/profiles/*.json
 
 # Local regression-test driver
 test-loop2.ps1
+
+# Local deploy scripts
+deploy_local/
