@@ -276,6 +276,18 @@ public partial class WorldClient
         LoadCUFProfiles cuf = new();
         cuf.Data = GetSession().AccountDataMgr.LoadCUFProfiles();
         SendPacketToClient(cuf);
+
+        // Issue #80: modern 1.14+ Classic clients auto-cancel wand `Shoot` when target enters
+        // melee range (`autoRangedCombat` CVar default-ON). Priests rely on wand for downtime
+        // DPS — hint them to disable the CVar so wand keeps firing in melee.
+        if (GetSession().GameState.CurrentPlayerInfo?.ClassId == Class.Priest &&
+            ModernVersion.ExpansionVersion == 1 &&
+            ModernVersion.AddedInVersion(ClientVersionBuild.V1_14_0_39802))
+        {
+            ChatPkt hint = new ChatPkt(GetSession(), ChatMessageTypeModern.System,
+                "[HermesProxy] Wand tip: type |cff00ff00/console autoRangedCombat 0|r to keep your wand firing when mobs enter melee range.");
+            SendPacketToClient(hint);
+        }
     }
 
     [PacketHandler(Opcode.SMSG_CHARACTER_LOGIN_FAILED)]
