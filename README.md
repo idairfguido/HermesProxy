@@ -210,6 +210,21 @@ Full reference (line format, severity/category letters, settings table, CLI exam
 }
 ```
 
+## Diagnostics
+
+The proxy auto-enables the .NET `createdump` facility on startup so native crashes (AVs, FailFast, stack overflow, GC corruption) drop a heap mini-dump to `bin/<Release|Debug>/Logs/crash-<pid>.dmp`. Managed exceptions are routed through the existing log/flush handlers and don't need this. Open the dump in WinDbg / Visual Studio (`Debug → Open → Dump`) for the full managed stack + reachable object graph at the crash site.
+
+To opt out — for example to defer to a different crash reporter — set `DOTNET_DbgEnableMiniDump` to any value before launch (the proxy honours a pre-existing value and skips its own configuration).
+
+Related env vars set automatically (overridable):
+
+| Variable                       | Default value                  | Purpose                                                |
+|--------------------------------|--------------------------------|--------------------------------------------------------|
+| `DOTNET_DbgEnableMiniDump`     | `1`                            | Master switch for createdump on unrecoverable faults   |
+| `DOTNET_DbgMiniDumpType`       | `2` (Heap)                     | Dump scope — `1`=Mini, `2`=Heap, `3`=Triage, `4`=Full  |
+| `DOTNET_DbgMiniDumpName`       | `Logs/crash-<pid>.dmp`         | Output path                                            |
+| `DOTNET_CreateDumpDiagnostics` | `1`                            | Verbose stderr logging if dump generation fails        |
+
 ## Performance Optimizations
 
 Zero-allocation packet I/O via `Span<T>`/`ref struct`, ArrayPool-backed `ByteBuffer`, cached enum mappings, `FrozenDictionary` opcode lookups, value-type `WowGuid`. Benchmarks and full breakdown in [docs/perf.md](docs/perf.md).

@@ -23,6 +23,29 @@ public class Program
 {
     public static async Task<int> Main(string[] args)
     {
+        // Enable .NET createdump on native crashes / FailFast / stack overflow /
+        // GC corruption — managed exceptions are already covered by the handlers
+        // below, but native-side faults terminate the process *without* firing
+        // any managed handler. Past silent crashes (e.g. proxy log truncates
+        // mid-stream with no exception trace) were unrecoverable for lack of
+        // a dump. Defaults: Heap dump (~50-200 MB, full stacks + reachable
+        // managed objects) into `Logs/crash-<pid>.dmp`. Honour the env var if
+        // the user already set it (opt-out path).
+        if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable("DOTNET_DbgEnableMiniDump")))
+        {
+            try
+            {
+                var dumpDir = Path.Combine(AppContext.BaseDirectory, "Logs");
+                Directory.CreateDirectory(dumpDir);
+                var dumpName = Path.Combine(dumpDir, $"crash-{Environment.ProcessId}.dmp");
+                Environment.SetEnvironmentVariable("DOTNET_DbgEnableMiniDump", "1");
+                Environment.SetEnvironmentVariable("DOTNET_DbgMiniDumpType", "2"); // Heap
+                Environment.SetEnvironmentVariable("DOTNET_DbgMiniDumpName", dumpName);
+                Environment.SetEnvironmentVariable("DOTNET_CreateDumpDiagnostics", "1");
+            }
+            catch { /* best effort */ }
+        }
+
         CultureInfo.DefaultThreadCurrentCulture = CultureInfo.InvariantCulture;
         Thread.CurrentThread.CurrentCulture = CultureInfo.InvariantCulture;
 
