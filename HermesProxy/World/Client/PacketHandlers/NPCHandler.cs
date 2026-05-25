@@ -84,6 +84,11 @@ public partial class WorldClient
         SendPacketToClient(confirm);
     }
 
+    // Shown (greyed, out of stock) only when a legacy vendor's entire stock is class-filtered to
+    // empty, purely so the modern client opens the merchant frame so the player can still sell.
+    // Cheap era-ubiquitous item; change freely.
+    private const uint PlaceholderVendorItemId = 6948; // Hearthstone
+
     [PacketHandler(Opcode.SMSG_VENDOR_INVENTORY)]
     void HandleVendorInventory(WorldPacket packet)
     {
@@ -95,6 +100,20 @@ public partial class WorldClient
         if (itemsCount == 0)
         {
             vendor.Reason = packet.ReadUInt8();
+            // cMaNGOS class-filters a vendor's whole stock server-side (e.g. Cylina Darkheart, a
+            // warlock-only vendor, sends 0 items to non-warlocks). The modern client opens the
+            // merchant frame only when the list has >=1 item and Reason==0, so otherwise the player
+            // can't even sell. Inject one out-of-stock placeholder (Quantity=0 => greyed + unbuyable)
+            // so the frame opens. (#88)
+            vendor.Reason = 0;
+            vendor.Items.Add(new VendorItem
+            {
+                Slot = 1,
+                Quantity = 0,        // 0 left in stock -> client greys it and blocks purchase
+                StackCount = 1,
+                Price = 1,
+                Item = { ItemID = PlaceholderVendorItemId },
+            });
             SendPacketToClient(vendor);
             return;
         }
