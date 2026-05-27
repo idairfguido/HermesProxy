@@ -110,7 +110,7 @@ public sealed class BnetRestApiSession : SSLSocket
             switch (field.Id)
             {
                 case "account_name": login = field.Value!.Trim().ToUpperInvariant(); break;
-                case "password": password = field.Value!; break;
+                case "password": password = field.Value!.Trim(); break;
             }
         }
 
