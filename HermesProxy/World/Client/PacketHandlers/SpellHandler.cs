@@ -1013,30 +1013,58 @@ public partial class WorldClient
         spell.CasterGUID = packet.ReadPackedGuid().To128(GetSession().GameState);
 
         if (LegacyVersion.AddedInVersion(ClientVersionBuild.V2_0_1_6180))
+        {
+            // TBC+: dispel spell id + debug flag + count, per-entry Harmful, optional debug tail.
             spell.DispelledBySpellID = packet.ReadUInt32();
-        else
-            spell.DispelledBySpellID = GetSession().GameState.LastDispellSpellId;
+            bool hasDebug = packet.ReadBool();
 
-        bool hasDebug;
-        if (LegacyVersion.AddedInVersion(ClientVersionBuild.V2_0_1_6180))
-            hasDebug = packet.ReadBool();
-        else
-            hasDebug = false;
-
-        int count = packet.ReadInt32();
-        for (int i = 0; i < count; i++)
-        {
-            SpellDispellData dispel = new SpellDispellData();
-            dispel.SpellID = packet.ReadUInt32();
-            if (LegacyVersion.AddedInVersion(ClientVersionBuild.V2_0_1_6180))
+            int count = packet.ReadInt32();
+            for (int i = 0; i < count; i++)
+            {
+                SpellDispellData dispel = new SpellDispellData();
+                dispel.SpellID = packet.ReadUInt32();
                 dispel.Harmful = packet.ReadBool();
-            spell.DispellData.Add(dispel);
-        }
+                spell.DispellData.Add(dispel);
+            }
 
-        if (hasDebug)
+            if (hasDebug)
+            {
+                packet.ReadInt32(); // unk
+                packet.ReadInt32(); // unk
+            }
+        }
+        else
         {
-            packet.ReadInt32(); // unk
-            packet.ReadInt32(); // unk
+            // Vanilla 1.12 SMSG_SPELLDISPELLOG has two wire layouts in the wild (issue #79):
+            //   mangos/VMaNGOS: uint32 count, uint32[count] spellId
+            //   Kronos:         uint32 dispelBySpellId, { uint32 spellId, uint8 charges }*
+            // Tell them apart with pure byte-math, no realm/config heuristic: for mangos the
+            // leading uint32 IS the count, so the bytes left equal (count + 1) spell-id slots.
+            // Kronos's leading uint32 is a real spell id (~1152) that can never line up that way.
+            const int SpellIdSize = sizeof(uint);                 // count field and each spell id
+            const int KronosEntrySize = sizeof(uint) + sizeof(byte); // spell id + charges byte
+
+            int bytesAfterGuids = packet.Remaining();
+            uint countOrDispelledSpellId = packet.ReadUInt32();
+            if (bytesAfterGuids == SpellIdSize * ((int)countOrDispelledSpellId + 1))
+            {
+                // mangos / VMaNGOS — count-based, dispel spell id not carried on the wire.
+                spell.DispelledBySpellID = GetSession().GameState.LastDispellSpellId;
+                for (uint i = 0; i < countOrDispelledSpellId; i++)
+                    spell.DispellData.Add(new SpellDispellData { SpellID = packet.ReadUInt32() });
+            }
+            else
+            {
+                // Kronos — leading field is the dispelling spell id; entries are length-driven.
+                spell.DispelledBySpellID = countOrDispelledSpellId;
+                while (packet.Remaining() >= KronosEntrySize)
+                {
+                    SpellDispellData dispel = new SpellDispellData();
+                    dispel.SpellID = packet.ReadUInt32();
+                    packet.ReadUInt8(); // charges / flag — no slot in the modern struct
+                    spell.DispellData.Add(dispel);
+                }
+            }
         }
 
         SendPacketToClient(spell);

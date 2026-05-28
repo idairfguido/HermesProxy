@@ -294,6 +294,11 @@ public class ByteBuffer : IDisposable
         return _position < _length;
     }
 
+    public int Remaining()
+    {
+        return _length - _position;
+    }
+
     public uint ReadPackedTime()
     {
         return (uint)Time.GetUnixTimeFromPackedTime(ReadUInt32());
