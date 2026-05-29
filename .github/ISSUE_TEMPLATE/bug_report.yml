@@ -15,7 +15,7 @@ body:
       HermesProxy --set Log.MinimumLevel=Verbose --set Log.Console.MinimumLevel=Verbose --set Log.Packet.MinimumLevel=Verbose
       ```
 
-      Then attach the resulting `Logs/hermes-*.log` and matching `PacketsLog/*.pkt` from that session.
+      Then attach the resulting `Logs/hermes-*.log` and matching `PacketsLog/*.pkt` from that session. GitHub blocks `.pkt` uploads — **zip the `.pkt` first** (or rename it to `.pkt.txt`).
 
 - type: textarea
   attributes:
@@ -62,6 +62,9 @@ body:
       - VMaNGOS
       - TrinityCore
       - AzerothCore
+      - ChromieCraft
+      - Solocraft
+      - Kronos
       - Other
   validations:
     required: true
@@ -94,7 +97,9 @@ body:
     description: |
       Drag-drop the matching `PacketsLog/modern_<ClientBuild>_<timestamp>_<n>.pkt` file here (e.g. `modern_12340_20260505_025453_1.pkt`).
       The `<timestamp>` (`YYYYMMDD_HHMMSS`) must match the application log above — that is how the two files get correlated to a single session.
-    placeholder: Drop your .pkt file in this box.
+
+      **GitHub blocks `.pkt` uploads.** Zip the file first (right-click → Compress / Send to → Zip) and drag the `.zip` here. Renaming to `.pkt.txt` also works, but zip is preferred — it is smaller and keeps the original filename.
+    placeholder: Drop your zipped .pkt (or .pkt.txt) file in this box.
   validations:
     required: true
 
@@ -105,7 +110,7 @@ body:
     options:
       - label: I have attached the application log from `Logs/`.
         required: true
-      - label: I have attached the packet capture from `PacketsLog/`.
+      - label: I have attached the packet capture from `PacketsLog/` (zipped, or renamed to `.pkt.txt`).
         required: true
 
 - type: input
