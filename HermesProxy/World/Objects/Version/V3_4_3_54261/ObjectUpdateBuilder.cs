@@ -843,69 +843,89 @@ public partial class ObjectUpdateBuilder
         data.WriteInt32(active.CharacterPoints.GetValueOrDefault());               // bit 33: CharacterPoints (Int32)
         data.WriteInt32(active.MaxTalentTiers.GetValueOrDefault());                // bit 34: MaxTalentTiers (Int32)
         data.WriteUInt32(active.TrackCreatureMask ?? 0u);                          // bit 35: TrackCreatureMask (UInt32) — was hardcoded 0; live property exists
-        data.WriteUInt32(0u);                                                      // bit 36: MainhandExpertise (Float) — TYPE MISMATCH: wire is UInt32 here but descriptor says Float. Safe while value=0. TODO read live as Float.
-        data.WriteUInt32(0u);                                                      // bit 37: OffhandExpertise (Float) — TYPE MISMATCH. TODO read live as Float.
+        // bits 267-268 (parent 266): TrackResourceMask[2] (UInt32). These two slots were
+        // previously mislabeled as Mainhand/OffhandExpertise — TC WriteCreate (UpdateFields.cpp:2886)
+        // emits TrackResourceMask here, BEFORE the expertise floats. Only [0] is populated
+        // from legacy PLAYER_TRACK_RESOURCES; [1] stays 0.
+        data.WriteUInt32(active.TrackResourceMask[0].GetValueOrDefault());         // TrackResourceMask[0] (UInt32)
+        data.WriteUInt32(active.TrackResourceMask[1].GetValueOrDefault());         // TrackResourceMask[1] (UInt32)
 
-        // Block 38 percentages (12 fields: RangedExpertise..OffhandCritPercentage + ShieldBlock-area filler).
-        // All zero today; live values available on ActivePlayerData. TODO unpack per-field.
-        for (int z = 0; z < 12; z++)
-            data.WriteFloat(0f);
+        // Block 38 percentages (12 floats, TC UpdateFields.cpp:2890-2901).
+        // MainhandExpertise..OffhandCritPercentage. Most populated from legacy wire;
+        // RangedExpertise/CombatRatingExpertise/*FromAttribute have no WotLK source (0).
+        data.WriteFloat(active.MainhandExpertise.GetValueOrDefault());             // bit 36: MainhandExpertise (Float)
+        data.WriteFloat(active.OffhandExpertise.GetValueOrDefault());              // bit 37: OffhandExpertise (Float)
+        data.WriteFloat(active.RangedExpertise.GetValueOrDefault());               // bit 39: RangedExpertise (Float)
+        data.WriteFloat(active.CombatRatingExpertise.GetValueOrDefault());         // bit 40: CombatRatingExpertise (Float)
+        data.WriteFloat(active.BlockPercentage.GetValueOrDefault());               // bit 41: BlockPercentage (Float)
+        data.WriteFloat(active.DodgePercentage.GetValueOrDefault());               // bit 42: DodgePercentage (Float)
+        data.WriteFloat(active.DodgePercentageFromAttribute.GetValueOrDefault());  // bit 43: DodgePercentageFromAttribute (Float)
+        data.WriteFloat(active.ParryPercentage.GetValueOrDefault());               // bit 44: ParryPercentage (Float)
+        data.WriteFloat(active.ParryPercentageFromAttribute.GetValueOrDefault());  // bit 45: ParryPercentageFromAttribute (Float)
+        data.WriteFloat(active.CritPercentage.GetValueOrDefault());                // bit 46: CritPercentage (Float)
+        data.WriteFloat(active.RangedCritPercentage.GetValueOrDefault());          // bit 47: RangedCritPercentage (Float)
+        data.WriteFloat(active.OffhandCritPercentage.GetValueOrDefault());         // bit 48: OffhandCritPercentage (Float)
 
-        // Multi-school combat arrays — interleaved by school index 0..6.
-        // bits 270/277/284/291 (parent 269): SpellCritPercentage[7], ModDamageDonePos[7], ModDamageDoneNeg[7], ModDamageDonePercent[7].
-        // All zero today; live values available on ActivePlayerData. TODO read per-element.
+        // Multi-school combat arrays — interleaved by school index 0..6 (TC UpdateFields.cpp:2902-2908).
+        // SpellCritPercentage[7], ModDamageDonePos[7], ModDamageDoneNeg[7], ModDamageDonePercent[7].
+        // All populated from legacy wire (PLAYER_SPELL_CRIT_PERCENTAGE1 / PLAYER_FIELD_MOD_DAMAGE_DONE_*).
         for (int k = 0; k < 7; k++)
         {
-            data.WriteFloat(0f);
-            data.WriteInt32(0);
-            data.WriteInt32(0);
-            data.WriteFloat(0f);
+            data.WriteFloat(active.SpellCritPercentage[k].GetValueOrDefault());
+            data.WriteInt32(active.ModDamageDonePos[k].GetValueOrDefault());
+            data.WriteInt32(active.ModDamageDoneNeg[k].GetValueOrDefault());
+            data.WriteFloat(active.ModDamageDonePercent[k].GetValueOrDefault());
         }
 
-        // Block 38 remainder (bits 51-68: Mastery/Speed/Avoidance/Sturdiness/Versatility*/PvpPower*/ModHealing*/etc.).
-        // All zero today; live values available on ActivePlayerData. TODO unpack per-field.
-        data.WriteInt32(0);
-        data.WriteFloat(0f);
-        data.WriteFloat(0f);
-        data.WriteFloat(0f);
-        data.WriteFloat(0f);
-        data.WriteFloat(0f);
-        data.WriteInt32(0);
-        data.WriteFloat(0f);
-        data.WriteFloat(0f);
-        data.WriteFloat(0f);
+        // Block 38 remainder (TC UpdateFields.cpp:2909-2918).
+        // ShieldBlock populated from legacy PLAYER_SHIELD_BLOCK; the rest are retail-era
+        // stats with no WotLK source (forward-if-stored, else 0/default).
+        data.WriteInt32(active.ShieldBlock.GetValueOrDefault());                   // bit 49: ShieldBlock (Int32)
+        data.WriteFloat(0f);                                                       // bit 50: ShieldBlockCritPercentage (Float) — no ActivePlayerData property
+        data.WriteFloat(active.Mastery.GetValueOrDefault());                       // bit 51: Mastery (Float)
+        data.WriteFloat(active.Speed.GetValueOrDefault());                         // bit 52: Speed (Float)
+        data.WriteFloat(active.Avoidance.GetValueOrDefault());                     // bit 53: Avoidance (Float)
+        data.WriteFloat(active.Sturdiness.GetValueOrDefault());                    // bit 54: Sturdiness (Float)
+        data.WriteInt32(active.Versatility.GetValueOrDefault());                   // bit 55: Versatility (Int32)
+        data.WriteFloat(active.VersatilityBonus.GetValueOrDefault());              // bit 56: VersatilityBonus (Float)
+        data.WriteFloat(active.PvpPowerDamage.GetValueOrDefault());                // bit 57: PvpPowerDamage (Float)
+        data.WriteFloat(active.PvpPowerHealing.GetValueOrDefault());               // bit 58: PvpPowerHealing (Float)
 
         // bit 299 (parent 298): ExploredZones[240] (UInt64). Live property exists; TODO per-element read.
         for (int l = 0; l < 240; l++)
             data.WriteUInt64(active.ExploredZones[l].GetValueOrDefault());
 
         // bits 540-541 (parent 539): RestInfo[2] nested struct {Threshold:UInt32, StateID:UInt8}.
-        // Defaults: Threshold=0, StateID=1 per element. TODO read active.RestInfo[r].Threshold/StateID.
-        data.WriteUInt32(0u);                                                      // RestInfo[0].Threshold
-        data.WriteUInt8(1);                                                        // RestInfo[0].StateID (default 1)
-        data.WriteUInt32(0u);                                                      // RestInfo[1].Threshold
-        data.WriteUInt8(1);                                                        // RestInfo[1].StateID (default 1)
+        // StateID defaults to 1 when unset. RestInfo elements populated for current player.
+        data.WriteUInt32(active.RestInfo[0]?.Threshold ?? 0u);                     // RestInfo[0].Threshold
+        data.WriteUInt8((byte)(active.RestInfo[0]?.StateID ?? 1));                 // RestInfo[0].StateID (default 1)
+        data.WriteUInt32(active.RestInfo[1]?.Threshold ?? 0u);                     // RestInfo[1].Threshold
+        data.WriteUInt8((byte)(active.RestInfo[1]?.StateID ?? 1));                 // RestInfo[1].StateID (default 1)
 
-        data.WriteInt32(0);                                                        // unmapped placeholder
-        data.WriteFloat(0f);                                                       // unmapped placeholder (likely follow-up scalar)
-        data.WriteFloat(0f);                                                       // unmapped placeholder
-        data.WriteFloat(0f);                                                       // unmapped placeholder
+        // ModHealing block (TC UpdateFields.cpp:2927-2930). ModHealingDonePos populated
+        // from legacy PLAYER_FIELD_MOD_HEALING_DONE_POS; the percent fields have no WotLK source.
+        data.WriteInt32(active.ModHealingDonePos.GetValueOrDefault());             // bit 59: ModHealingDonePos (Int32)
+        data.WriteFloat(active.ModHealingPercent.GetValueOrDefault());             // bit 60: ModHealingPercent (Float)
+        data.WriteFloat(active.ModHealingDonePercent.GetValueOrDefault());         // bit 61: ModHealingDonePercent (Float)
+        data.WriteFloat(active.ModPeriodicHealingDonePercent.GetValueOrDefault()); // bit 62: ModPeriodicHealingDonePercent (Float)
 
         // bits 543/546 (parent 542): WeaponDmgMultipliers[3], WeaponAtkSpeedMultipliers[3] (both Float, default 1f).
-        // TODO read live: active.WeaponDmgMultipliers?[m] ?? 1f / active.WeaponAtkSpeedMultipliers?[m] ?? 1f.
+        // Forward-if-stored, else 1f (multipliers must default to 1, not 0).
         for (int m = 0; m < 3; m++)
         {
-            data.WriteFloat(1f);                                                   // WeaponDmgMultipliers[m]
-            data.WriteFloat(1f);                                                   // WeaponAtkSpeedMultipliers[m]
+            data.WriteFloat(active.WeaponDmgMultipliers[m] ?? 1f);                 // WeaponDmgMultipliers[m]
+            data.WriteFloat(active.WeaponAtkSpeedMultipliers[m] ?? 1f);            // WeaponAtkSpeedMultipliers[m]
         }
-        data.WriteFloat(0f);                                                       // unmapped placeholder
-        data.WriteFloat(0f);                                                       // unmapped placeholder
-        data.WriteFloat(0f);                                                       // unmapped placeholder
-        data.WriteFloat(0f);                                                       // unmapped placeholder
-        data.WriteInt32(0);                                                        // unmapped placeholder
-        data.WriteInt32(0);                                                        // unmapped placeholder
+        // ModSpellPower block (TC UpdateFields.cpp:2936-2941). ModTargetResistance /
+        // ModTargetPhysicalResistance populated from legacy wire; the percent fields have no WotLK source.
+        data.WriteFloat(active.ModSpellPowerPercent.GetValueOrDefault());          // bit 63: ModSpellPowerPercent (Float)
+        data.WriteFloat(active.ModResiliencePercent.GetValueOrDefault());          // bit 64: ModResiliencePercent (Float)
+        data.WriteFloat(active.OverrideSpellPowerByAPPercent.GetValueOrDefault()); // bit 65: OverrideSpellPowerByAPPercent (Float)
+        data.WriteFloat(active.OverrideAPBySpellPowerPercent.GetValueOrDefault()); // bit 66: OverrideAPBySpellPowerPercent (Float)
+        data.WriteInt32(active.ModTargetResistance.GetValueOrDefault());           // bit 67: ModTargetResistance (Int32)
+        data.WriteInt32(active.ModTargetPhysicalResistance.GetValueOrDefault());   // bit 68: ModTargetPhysicalResistance (Int32)
 
-        data.WriteUInt32(0u);                                                      // unmapped placeholder (likely block 70 parent slot)
+        data.WriteUInt32(active.LocalFlags.GetValueOrDefault());                   // bit 69: LocalFlags (UInt32)
         // bits 71-74 (parent 70): block-70 byte cluster — fixed 2026-05-21
         // (was the action-bar 2/3/4/5 persistence bug).
         data.WriteUInt8(active.GrantableLevels ?? 0);                              // bit 71: GrantableLevels (UInt8)
@@ -916,23 +936,34 @@ public partial class ObjectUpdateBuilder
         data.WriteUInt32(active.PvpMedals ?? 0u);                                  // bit 76: PvpMedals (UInt32) — was hardcoded 0; live property exists
 
         // bits 550/562 (parent 549): BuybackPrice[12] (UInt32), BuybackTimestamp[12] (Int64 cast from uint?).
-        // Interleaved by slot. Live properties exist; TODO per-element read.
+        // Interleaved by slot. Populated from legacy PLAYER_FIELD_BUYBACK_PRICE_1 / _TIMESTAMP_1.
         for (int n = 0; n < 12; n++)
         {
-            data.WriteUInt32(0u);                                                  // BuybackPrice[n] (UInt32)
-            data.WriteInt64(0L);                                                   // BuybackTimestamp[n] ((long)cast)
+            data.WriteUInt32(active.BuybackPrice[n].GetValueOrDefault());          // BuybackPrice[n] (UInt32)
+            data.WriteInt64((long)active.BuybackTimestamp[n].GetValueOrDefault()); // BuybackTimestamp[n] ((long)cast)
         }
 
         // bits 77-84 (block 70): 8 UInt16 honorable/dishonorable kill counters
-        // (Today/Yesterday/LastWeek/ThisWeek × Honorable/Dishonorable).
-        // Live properties exist; TODO per-bit read.
-        for (int o = 0; o < 8; o++)
-            data.WriteUInt16(0);
+        // (Today/Yesterday/LastWeek/ThisWeek × Honorable/Dishonorable). TC UpdateFields.cpp:2954-2961.
+        // Populated from legacy PLAYER_FIELD_KILLS / *_CONTRIBUTION fields.
+        data.WriteUInt16(active.TodayHonorableKills.GetValueOrDefault());          // bit 77
+        data.WriteUInt16(active.TodayDishonorableKills.GetValueOrDefault());       // bit 78
+        data.WriteUInt16(active.YesterdayHonorableKills.GetValueOrDefault());      // bit 79
+        data.WriteUInt16(active.YesterdayDishonorableKills.GetValueOrDefault());   // bit 80
+        data.WriteUInt16(active.LastWeekHonorableKills.GetValueOrDefault());       // bit 81
+        data.WriteUInt16(active.LastWeekDishonorableKills.GetValueOrDefault());    // bit 82
+        data.WriteUInt16(active.ThisWeekHonorableKills.GetValueOrDefault());       // bit 83
+        data.WriteUInt16(active.ThisWeekDishonorableKills.GetValueOrDefault());    // bit 84
 
-        // bits 85-91 (block 70): 7 UInt32 contribution / lifetime kills / yesterday & lastweek contribution / lastweek rank.
-        // Live properties exist; TODO per-bit read.
-        for (int p = 0; p < 7; p++)
-            data.WriteUInt32(0u);
+        // bits 85-91 (block 70): 7 UInt32 contribution / lifetime kills / lastweek rank. TC UpdateFields.cpp:2962-2968.
+        // Field_F24 (4th slot) is unused — no ActivePlayerData property.
+        data.WriteUInt32(active.ThisWeekContribution.GetValueOrDefault());         // bit 85: ThisWeekContribution
+        data.WriteUInt32(active.LifetimeHonorableKills.GetValueOrDefault());       // bit 86: LifetimeHonorableKills
+        data.WriteUInt32(active.LifetimeDishonorableKills.GetValueOrDefault());    // bit 87: LifetimeDishonorableKills
+        data.WriteUInt32(0u);                                                      // bit 88: Field_F24 — unused
+        data.WriteUInt32(active.YesterdayContribution.GetValueOrDefault());        // bit 89: YesterdayContribution
+        data.WriteUInt32(active.LastWeekContribution.GetValueOrDefault());         // bit 90: LastWeekContribution
+        data.WriteUInt32(active.LastWeekRank.GetValueOrDefault());                 // bit 91: LastWeekRank
 
         data.WriteInt32(active.WatchedFactionIndex ?? -1);                         // bit 92: WatchedFactionIndex (Int32, default -1)
 
@@ -958,8 +989,8 @@ public partial class ObjectUpdateBuilder
         data.WriteFloat(0f);                                                       // bit 98: UiSpellHitModifier (Float) — live property exists, TODO
         data.WriteInt32(0);                                                        // bit 99: HomeRealmTimeOffset (Int32) — live property exists, TODO
         data.WriteFloat(active.ModPetHaste ?? 1f);                                 // bit 100: ModPetHaste (Float, default 1f)
-        data.WriteUInt8(0);                                                        // bit 101: LocalRegenFlags (UInt8) — live property exists, TODO
-        data.WriteUInt8(0);                                                        // bit 103: AuraVision (UInt8) — live property exists, TODO
+        data.WriteUInt8(active.LocalRegenFlags.GetValueOrDefault());               // bit 101: LocalRegenFlags (UInt8)
+        data.WriteUInt8(active.AuraVision.GetValueOrDefault());                    // bit 103: AuraVision (UInt8) — populated from PLAYER_FIELD_BYTES2
         data.WriteUInt8(active.NumBackpackSlots ?? 16);                            // bit 104: NumBackpackSlots (UInt8, default 16)
         data.WriteInt32(0);                                                        // bit 105: OverrideSpellsID (Int32) — live property exists, TODO
         data.WriteInt32(0);                                                        // bit 106: LfgBonusFactionID (Int32) — live property exists, TODO
@@ -983,8 +1014,8 @@ public partial class ObjectUpdateBuilder
         data.WriteInt32(0);                                                        // bit 111: Field_F74 — descriptor: unused
         data.WriteInt32((int?)active.PvPTierMaxFromWins ?? -1);                    // bit 112: PvPTierMaxFromWins (uint?→Int32 cast, default -1)
         data.WriteInt32((int?)active.PvPLastWeeksTierMaxFromWins ?? -1);           // bit 113: PvPLastWeeksTierMaxFromWins (uint?→Int32 cast, default -1)
-        data.WriteUInt8(0);                                                        // bit 114: PvPRankProgress (UInt8) — live property exists, TODO
-        data.WriteInt32(0);                                                        // bits 115-119: unused per descriptor
+        data.WriteUInt8(active.PvPRankProgress.GetValueOrDefault());               // bit 114: PvPRankProgress (UInt8) — populated from PLAYER_FIELD_BYTES2
+        data.WriteInt32(0);                                                        // PerksProgramCurrency (Int32) — no WotLK source (TC UpdateFields.cpp:3015)
 
         // 16 dynamic-field count prefixes. Per WPP V3_4_0 ReadCreateActivePlayerData
         // wire order. Slots 6 + 7 = Heirlooms.Resize + HeirloomFlags.Resize; we ship
@@ -1008,9 +1039,9 @@ public partial class ObjectUpdateBuilder
         data.WriteUInt32(0u);                                                      // SpellFlatModByLabel.Resize
         data.WriteUInt32(0u);                                                      // TaskQuests.Resize
 
-        data.WriteInt32(0);                                                        // unmapped placeholder
-        data.WriteUInt32(0u);                                                      // unmapped placeholder
-        data.WriteUInt32(0u);                                                      // unmapped placeholder
+        data.WriteInt32(0);                                                        // TransportServerTime (Int32) — no WotLK source (TC UpdateFields.cpp:3047)
+        data.WriteUInt32(0u);                                                      // TraitConfigs.size — always 0 (TC UpdateFields.cpp:3048)
+        data.WriteUInt32(0u);                                                      // ActiveCombatTraitConfigID (UInt32) — no WotLK source (TC UpdateFields.cpp:3049)
 
         // bit 1512 GlyphsGroup (CustomField, sources from _gameState — not ActivePlayerData).
         for (int g = 0; g < PlayerConst.MaxGlyphSlots; g++)
