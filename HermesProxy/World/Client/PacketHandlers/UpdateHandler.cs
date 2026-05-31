@@ -2608,8 +2608,13 @@ public partial class WorldClient
             int UNIT_FIELD_ATTACK_POWER_MODS = LegacyVersion.GetUpdateField(UnitField.UNIT_FIELD_ATTACK_POWER_MODS);
             if (UNIT_FIELD_ATTACK_POWER_MODS >= 0 && updateMaskArray[UNIT_FIELD_ATTACK_POWER_MODS])
             {
-                updateData.UnitData.AttackPowerModNeg = (updates[UNIT_FIELD_ATTACK_POWER_MODS].Int32Value & 0xFFFF);
-                updateData.UnitData.AttackPowerModPos = ((updates[UNIT_FIELD_ATTACK_POWER_MODS].Int32Value >> 16) & 0xFFFF);
+                // Packed two int16: low word = POSITIVE mod, high word = NEGATIVE mod
+                // (mangos/TC SetInt16Value idx0=pos, idx1=neg). Modern total = AttackPower +
+                // ModPos + ModNeg, so Neg is stored SIGNED (negative). Was swapped (low→Neg,
+                // high→Pos) AND zero-extended (lost sign) → flat +AP items never showed green.
+                int apMods = updates[UNIT_FIELD_ATTACK_POWER_MODS].Int32Value;
+                updateData.UnitData.AttackPowerModPos = (short)apMods;
+                updateData.UnitData.AttackPowerModNeg = (short)(apMods >> 16);
             }
             int UNIT_FIELD_RANGED_ATTACK_POWER = LegacyVersion.GetUpdateField(UnitField.UNIT_FIELD_RANGED_ATTACK_POWER);
             if (UNIT_FIELD_RANGED_ATTACK_POWER >= 0 && updateMaskArray[UNIT_FIELD_RANGED_ATTACK_POWER])
@@ -2619,8 +2624,10 @@ public partial class WorldClient
             int UNIT_FIELD_RANGED_ATTACK_POWER_MODS = LegacyVersion.GetUpdateField(UnitField.UNIT_FIELD_RANGED_ATTACK_POWER_MODS);
             if (UNIT_FIELD_RANGED_ATTACK_POWER_MODS >= 0 && updateMaskArray[UNIT_FIELD_RANGED_ATTACK_POWER_MODS])
             {
-                updateData.UnitData.RangedAttackPowerModNeg = (updates[UNIT_FIELD_RANGED_ATTACK_POWER_MODS].Int32Value & 0xFFFF);
-                updateData.UnitData.RangedAttackPowerModPos = ((updates[UNIT_FIELD_RANGED_ATTACK_POWER_MODS].Int32Value >> 16) & 0xFFFF);
+                // Same packing as melee: low word = POSITIVE, high word = NEGATIVE (signed).
+                int rapMods = updates[UNIT_FIELD_RANGED_ATTACK_POWER_MODS].Int32Value;
+                updateData.UnitData.RangedAttackPowerModPos = (short)rapMods;
+                updateData.UnitData.RangedAttackPowerModNeg = (short)(rapMods >> 16);
             }
             int UNIT_FIELD_RANGED_ATTACK_POWER_MULTIPLIER = LegacyVersion.GetUpdateField(UnitField.UNIT_FIELD_RANGED_ATTACK_POWER_MULTIPLIER);
             if (UNIT_FIELD_RANGED_ATTACK_POWER_MULTIPLIER >= 0 && updateMaskArray[UNIT_FIELD_RANGED_ATTACK_POWER_MULTIPLIER])
