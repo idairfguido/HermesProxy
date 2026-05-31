@@ -1398,6 +1398,12 @@ public partial class WorldClient
         data.ActiveFlags = 0u;
 
         if (legacyFlags.HasAnyFlag(AuraFlagsWotLK.Positive)) data.Flags |= AuraFlagsModern.Positive;
+        // Negative (harmful) bit must be forwarded: the modern client categorizes the aura
+        // as a debuff from this flag and applies the stat-penalty visual (red character-sheet
+        // numbers, e.g. Resurrection Sickness -%stat). Without it the icon shows (debuff
+        // border comes from spell DB2) but the stat reduction never renders red. Native 3.4.3
+        // ships Flags=21 (NoCaster|Duration|Negative) for 15007; dropping Negative gave 5.
+        if (legacyFlags.HasAnyFlag(AuraFlagsWotLK.Negative)) data.Flags |= AuraFlagsModern.Negative;
         if (legacyFlags.HasAnyFlag(AuraFlagsWotLK.Duration)) data.Flags |= AuraFlagsModern.Duration;
         if (legacyFlags.HasAnyFlag(AuraFlagsWotLK.NoCaster)) data.Flags |= AuraFlagsModern.NoCaster;
         if (legacyFlags.HasAnyFlag(AuraFlagsWotLK.EffectIndex0)) data.ActiveFlags |= 1u;
