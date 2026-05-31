@@ -651,7 +651,7 @@ OR `ItemFieldFlag.Child` (0x00200000) into the forwarded
 `GameData.HeirloomItemIds` (FrozenSet<int>, populated in
 `LoadHeirlooms`). V1_14 / V2_5 paths untouched.
 
-### G4. Character pane stats show 0% on login (Ranged Crit / Dodge / Parry / etc.)
+### G4. Character pane stats show 0% on login (Ranged Crit / Dodge / Parry / etc.) — RESOLVED 2026-05-31
 
 Symptom: after login, character pane Ranged tab (and likely Melee /
 Spell tabs) shows 0% crit chance, 0 Power, Hit Rating 0, etc. Touching
@@ -683,18 +683,49 @@ WPP-stated positions. Symptom was non-fatal because the player session
 ran, but bag descriptors (which depend on NumBackpackSlots and bag-slot
 GUIDs being at correct client-side wire offsets) parsed garbage.
 
-Fix path (deferred, M effort, **wire-position research blocked**):
-1. Capture a HermesProxy session sniff with a 54261-aware parser (need
-   either an updated WPP for build 54261 or a hand-disasm of the client's
-   reader function).
-2. Diff actual client wire layout vs WPP V3_4_3.51666 to identify which
-   fields differ between builds.
-3. Once correct 54261 layout known, do the live-value-read change for
-   the 12-field block at the correct wire positions.
+**RESOLVED 2026-05-31.** The 2026-05-23 conclusion was wrong: there is no
+8-byte 54261 vs WPP difference. The break that day was a **duplicate**
+`TrackResourceMask[2]` insert — those two UInt32 slots already existed in
+`WriteCreateActivePlayerAll`, mislabeled as `Mainhand/OffhandExpertise`
+("TYPE MISMATCH: wire is UInt32 here" was the tell). Inserting them again
+shifted every downstream field +8 bytes → bag breakage.
 
-Until then, character pane shows 0% stats on login. Workaround: any
-equipment touch triggers Values update with live values → display catches
-up.
+Ground truth is TC `refs/3.4.3_Source/.../UpdateFields.cpp:2869`
+`ActivePlayerData::WriteCreate` — the proxy's pre-existing byte layout
+already matched it field-for-field (count verified end-to-end). Fix this
+session: relabeled the mislabeled slots and replaced the hardcoded-zero
+blocks with live `active.*` reads **without changing any byte width** —
+the exact thing the old note said was needed. Filled: TrackResourceMask,
+Mainhand/Offhand/Ranged expertise, Block/Dodge/Parry/Crit %, multi-school
+`ModDamageDone*` + `SpellCritPercentage`, ShieldBlock, ModHealingDonePos,
+ModTargetResistance/Physical, LocalFlags, RestInfo, BuybackPrice/Timestamp,
+kill counters + contributions, AuraVision, PvPRankProgress. On-client
+confirmed (Ranged Crit etc. now correct on login, no equip-cycle needed).
+Lesson: diff against TC 3.4.3_Source, NOT WPP's 51666 module; never
+re-insert a field that already occupies wire space (even if mislabeled).
+
+**Sub-note — Attack Power +N green / −N red (2026-05-31):** legacy
+`UNIT_FIELD_ATTACK_POWER_MODS` packs `low16=POSITIVE, high16=NEGATIVE`
+(mangos `StatSystem.cpp:385`; TC `Unit.cpp:10279` adds both, Neg signed).
+`UpdateHandler.cs` had them swapped + zero-extended → flat +AP items never
+showed green. Fixed (melee+ranged): `(short)apMods` / `(short)(apMods>>16)`.
+On-client confirmed.
+
+**Sub-note — Resurrection Sickness red text / `*75%` NOT rendering (OPEN,
+2026-05-31):** the proxy DOES forward the reduction (verified via
+`.aura/.unaura 15007` toggle: Stats 24→6, AttackPower 82→28). The modern
+client still won't color the reduced attributes red. Root cause: the native
+3.4.3 *server* computes and ships derived display fields the legacy 3.3.5
+server never populates — e.g. `ModDamageDonePercent` = 0.25 on native vs
+1.0 (unchanged) via proxy; native AP goes negative. The red/`*75%` depends
+on these derived fields. Also fixed this session (necessary but not
+sufficient): the dropped `Negative` aura flag (`SpellHandler.ReadSingleAura`
+mapped Positive/Duration/NoCaster but not `AuraFlagsWotLK.Negative`).
+Fully matching native would require the proxy to **synthesize** the derived
+display fields from the active aura's MOD_PERCENT_STAT / MOD_DAMAGE_PERCENT_DONE
+effects — a real feature, deferred. Captures:
+`bin/Release/PacketsLog/modern_54261_20260531_023049_2.pkt` (proxy toggle),
+`refs/3.4.3_Build/.../World_sickness_75_mod.pkt` (native).
 
 Symptom: speculative. Native always emits the full 40-row spell modifier array (mostly empty rows). Proxy writes only populated mods. Unclear whether V3_4_3 client requires the canonical 40-row form or accepts dynamic count.
 
