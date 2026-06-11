@@ -109,6 +109,8 @@ internal sealed class ProxyHostedService : BackgroundService
         LoginServiceManager.Instance = _loginServiceManager;
         _loginServiceManager.Initialize();
 
+        BnetServerCertificate.Initialize(net.CertificatePfxPath, net.CertificatePfxPassword);
+
         StartListener(_bnetSocketManager,  typeof(BnetTcpSession).Name,     new IPEndPoint(bindIp, net.BNetPort));
         StartListener(_restSocketManager,  typeof(BnetRestApiSession).Name, new IPEndPoint(bindIp, net.RestPort));
         StartListener(_realmSocketManager, typeof(RealmSocket).Name,        new IPEndPoint(bindIp, net.RealmPort));

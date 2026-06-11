@@ -48,6 +48,9 @@ internal sealed class ProxyNetworkOptionsValidator : IValidateOptions<ProxyNetwo
         if (!IsValidPort(options.InstancePort))
             return ValidateOptionsResult.Fail($"{nameof(ProxyNetworkOptions)}.{nameof(ProxyNetworkOptions.InstancePort)} ({options.InstancePort}) out of allowed range (1-65534)");
 
+        if (!string.IsNullOrEmpty(options.CertificatePfxPath) && !System.IO.File.Exists(options.CertificatePfxPath))
+            return ValidateOptionsResult.Fail($"{nameof(ProxyNetworkOptions)}.{nameof(ProxyNetworkOptions.CertificatePfxPath)} file not found: '{options.CertificatePfxPath}'");
+
         return ValidateOptionsResult.Success;
     }
 

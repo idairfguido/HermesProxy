@@ -11,4 +11,13 @@ public sealed class ProxyNetworkOptions
     public int RealmPort { get; set; } = 8084;
 
     public int InstancePort { get; set; } = 8086;
+
+    /// <summary>
+    /// Optional path to a custom PKCS#12 (.pfx) certificate served on the BNet TLS endpoints
+    /// (BNetPort/RestPort). When unset, the embedded TrinityCore-compatible certificate is used.
+    /// </summary>
+    public string? CertificatePfxPath { get; set; }
+
+    /// <summary>Password for <see cref="CertificatePfxPath"/>; null for a passwordless pfx.</summary>
+    public string? CertificatePfxPassword { get; set; }
 }
