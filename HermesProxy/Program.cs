@@ -161,6 +161,8 @@ public class Program
         [nameof(ProxyNetworkOptions.BNetPort)]     = $"{nameof(ProxyNetworkOptions)}:{nameof(ProxyNetworkOptions.BNetPort)}",
         [nameof(ProxyNetworkOptions.RealmPort)]    = $"{nameof(ProxyNetworkOptions)}:{nameof(ProxyNetworkOptions.RealmPort)}",
         [nameof(ProxyNetworkOptions.InstancePort)] = $"{nameof(ProxyNetworkOptions)}:{nameof(ProxyNetworkOptions.InstancePort)}",
+        [nameof(ProxyNetworkOptions.CertificatePfxPath)]     = $"{nameof(ProxyNetworkOptions)}:{nameof(ProxyNetworkOptions.CertificatePfxPath)}",
+        [nameof(ProxyNetworkOptions.CertificatePfxPassword)] = $"{nameof(ProxyNetworkOptions)}:{nameof(ProxyNetworkOptions.CertificatePfxPassword)}",
 
         [nameof(DiagnosticsOptions.PacketsLog)]    = $"{nameof(DiagnosticsOptions)}:{nameof(DiagnosticsOptions.PacketsLog)}",
 
