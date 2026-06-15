@@ -187,6 +187,8 @@ public partial class WorldClient
         uint battlefieldListId = packet.ReadUInt32();
         packet.ReadUInt16(); // 0x1F90
 
+        Log.Print(LogType.Debug, $"[BG] SMSG_BATTLEFIELD_STATUS (TBC+): ticketId={hdr.Ticket.Id} battlefieldListId={battlefieldListId} arenaTeamSize={hdr.ArenaTeamSize} (listId=0 means the legacy server reports no/removed BG -> client sees FAILED).");
+
         if (battlefieldListId != 0)
         {
             hdr.BattlefieldListIDs.Add(battlefieldListId);
