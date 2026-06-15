@@ -19,6 +19,7 @@
 using Framework.Constants;
 using Framework.GameMath;
 using Framework.IO;
+using HermesProxy.Enums;
 using HermesProxy.World.Enums;
 using HermesProxy.World.Objects;
 using System;
@@ -347,6 +348,16 @@ public class RideTicket
         Id = data.ReadUInt32();
         Type = (RideType)data.ReadUInt32();
         Time = data.ReadInt64();
+        // V3_4_3.54261 RideTicket carries a trailing "Unknown925" bit (added ~9.2.5) and then
+        // byte-aligns (TC LFGPacketsCommon RideTicket >> ... ReadBit + ResetBitPos). Without
+        // consuming it, the next bit read — BattlefieldPort.AcceptedInvite — lands on THIS bit
+        // instead of the real accept bit in the following byte, so "Enter Battle" was read as a
+        // decline and the player never entered the popped battleground (#102).
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+        {
+            data.HasBit();         // Unknown925
+            data.ResetBitReader(); // byte-align to the next field's bit byte
+        }
     }
 
     public void Write(WorldPacket data)
