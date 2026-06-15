@@ -111,6 +111,18 @@ class BattlemasterJoin : ClientPacket
     public bool JoinAsGroup;
 }
 
+class BattlefieldListRequest : ClientPacket
+{
+    public BattlefieldListRequest(WorldPacket packet) : base(packet) { }
+
+    public override void Read()
+    {
+        ListID = _worldPacket.ReadInt32();
+    }
+
+    public int ListID;
+}
+
 public class BattlefieldStatusNeedConfirmation : ServerPacket, ISpanWritable
 {
     public BattlefieldStatusNeedConfirmation() : base(Opcode.SMSG_BATTLEFIELD_STATUS_NEED_CONFIRMATION) { }

@@ -26,6 +26,25 @@ public partial class WorldSocket
         SendPacketToServer(packet);
     }
 
+    [PacketHandler(Opcode.CMSG_BATTLEFIELD_LIST)]
+    void HandleBattlefieldList(BattlefieldListRequest request)
+    {
+        WorldPacket packet = new WorldPacket(Opcode.CMSG_BATTLEFIELD_LIST);
+        if (LegacyVersion.RemovedInVersion(ClientVersionBuild.V2_0_1_6180))
+            packet.WriteUInt32(GameData.GetMapIdFromBattlegroundId((uint)request.ListID));
+        else
+            packet.WriteUInt32((uint)request.ListID);
+
+        if (LegacyVersion.AddedInVersion(ClientVersionBuild.V2_0_1_6180))
+            packet.WriteUInt8(1); // fromWhere: 1 = PvP UI (lua RequestBattlegroundInstanceInfo)
+
+        if (LegacyVersion.AddedInVersion(ClientVersionBuild.V3_3_3_11685))
+            packet.WriteUInt8(0); // xpLocked
+
+        Log.Print(LogType.Debug, $"[BG] CMSG_BATTLEFIELD_LIST request: client ListID={request.ListID} -> forwarding legacy bgTypeId={request.ListID} (size={packet.GetSize()}).");
+        SendPacketToServer(packet);
+    }
+
     [PacketHandler(Opcode.CMSG_BATTLEFIELD_PORT)]
     void HandleBattlefieldPort(BattlefieldPort port)
     {
