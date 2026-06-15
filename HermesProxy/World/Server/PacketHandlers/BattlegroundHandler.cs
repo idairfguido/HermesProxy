@@ -29,6 +29,11 @@ public partial class WorldSocket
     [PacketHandler(Opcode.CMSG_BATTLEFIELD_LIST)]
     void HandleBattlefieldList(BattlefieldListRequest request)
     {
+        // V3_4_3-only: forwarding the PvP-UI BG-list query is part of the 54261 fix.
+        // V1_14/V2_5 keep their original behaviour (request not forwarded) — no side effect.
+        if (ModernVersion.Build != ClientVersionBuild.V3_4_3_54261)
+            return;
+
         WorldPacket packet = new WorldPacket(Opcode.CMSG_BATTLEFIELD_LIST);
         if (LegacyVersion.RemovedInVersion(ClientVersionBuild.V2_0_1_6180))
             packet.WriteUInt32(GameData.GetMapIdFromBattlegroundId((uint)request.ListID));
@@ -49,19 +54,31 @@ public partial class WorldSocket
     void HandleBattlefieldPort(BattlefieldPort port)
     {
         WorldPacket packet = new WorldPacket(Opcode.CMSG_BATTLEFIELD_PORT);
+        uint bgTypeId = GetSession().GameState.GetBattleFieldQueueType(port.Ticket.Id);
+
+        // arenatype byte. V3_4_3-only fix: send 0 for non-arena battlegrounds. The legacy
+        // server derives the BattlegroundQueueTypeId from (bgTypeId, arenaType); a non-zero
+        // arenatype on a non-arena BG resolves to a queue the player isn't in, so the server
+        // silently dropped "Enter Battle" and the player never entered the popped BG (#102).
+        // V1_14/V2_5 keep the prior constant (2) so older modern clients are unaffected.
+        byte arenaType = 2;
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+            arenaType = (byte)(GameData.Battlegrounds.TryGetValue(bgTypeId, out var bg) && bg.IsArena ? 2 : 0);
+
         if (LegacyVersion.AddedInVersion(ClientVersionBuild.V2_0_1_6180))
         {
-            packet.WriteUInt8(2);
+            packet.WriteUInt8(arenaType);
             packet.WriteUInt8(0);
-            packet.WriteUInt32(GetSession().GameState.GetBattleFieldQueueType(port.Ticket.Id));
+            packet.WriteUInt32(bgTypeId);
             packet.WriteUInt16(0x1F90);
             packet.WriteBool(port.AcceptedInvite);
         }
         else
         {
-            packet.WriteUInt32(GetSession().GameState.GetBattleFieldQueueType(port.Ticket.Id));
+            packet.WriteUInt32(bgTypeId);
             packet.WriteBool(port.AcceptedInvite);
         }
+        Log.Print(LogType.Debug, $"[BG] CMSG_BATTLEFIELD_PORT: ticketId={port.Ticket.Id} AcceptedInvite={port.AcceptedInvite} -> legacy bgTypeId={bgTypeId} arenatype={arenaType} action={(port.AcceptedInvite ? 1 : 0)} size={packet.GetSize()}.");
         SendPacketToServer(packet);
     }
 
