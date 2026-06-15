@@ -28,7 +28,10 @@ public partial class WorldClient
         SAttackStop attack = new();
         attack.Attacker = packet.ReadPackedGuid().To128(GetSession().GameState);
         attack.Victim = packet.ReadPackedGuid().To128(GetSession().GameState);
-        attack.NowDead = packet.ReadUInt32() != 0;
+        // Some backends (e.g. AzerothCore) emit a short SMSG_ATTACKSTOP without the
+        // trailing "now dead" uint32; guard the read so it doesn't kill the WorldClient
+        // receive loop (issue #102). Absent field defaults to not-dead.
+        attack.NowDead = packet.CanRead() && packet.ReadUInt32() != 0;
 
         var state = GetSession().GameState;
         if (attack.Attacker == state.CurrentPlayerGuid)
