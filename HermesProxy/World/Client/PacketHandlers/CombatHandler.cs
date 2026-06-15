@@ -28,10 +28,14 @@ public partial class WorldClient
         SAttackStop attack = new();
         attack.Attacker = packet.ReadPackedGuid().To128(GetSession().GameState);
         attack.Victim = packet.ReadPackedGuid().To128(GetSession().GameState);
-        // Some backends (e.g. AzerothCore) emit a short SMSG_ATTACKSTOP without the
+        // V3_4_3 backends (e.g. AzerothCore) can emit a short SMSG_ATTACKSTOP without the
         // trailing "now dead" uint32; guard the read so it doesn't kill the WorldClient
-        // receive loop (issue #102). Absent field defaults to not-dead.
-        attack.NowDead = packet.CanRead() && packet.ReadUInt32() != 0;
+        // receive loop (issue #102). Gated to V3_4_3 so V1_14/V2_5 keep the original
+        // unconditional read (no behaviour change for older modern clients).
+        if (ModernVersion.Build == ClientVersionBuild.V3_4_3_54261)
+            attack.NowDead = packet.CanRead() && packet.ReadUInt32() != 0;
+        else
+            attack.NowDead = packet.ReadUInt32() != 0;
 
         var state = GetSession().GameState;
         if (attack.Attacker == state.CurrentPlayerGuid)
